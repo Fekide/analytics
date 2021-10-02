@@ -9,6 +9,8 @@
         <p class="mt-4 text-base text-gray-400 leading-6">
         <%= if !Application.get_env(:plausible, :is_selfhost) do %>
           Made and hosted in the EU <span class="text-lg">🇪🇺</span><br />
+        <% else %>
+          powered by <a class="text-gray-100 hover:text-white" href="https://feki.de">Feki.de e.V.</a> <br />
         <% end %>
         100% self-funded and independent <br />
         Built by <a class="text-gray-100 hover:text-white" href="https://twitter.com/ukutaht">@ukutaht</a> and <a class="text-gray-100 hover:text-white" href="https://twitter.com/markosaric">@markosaric</a>
