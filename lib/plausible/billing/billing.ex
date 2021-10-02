@@ -196,6 +196,17 @@ defmodule Plausible.Billing do
     end)
   end
 
+  def usage_by_site(site) do
+    usage = Plausible.Stats.Clickhouse.usage(site)
+
+    {Map.get(usage, "pageviews", 0), Map.get(usage, "custom_events", 0)}
+  end
+
+  def usage_by_site_total(site) do
+    {pageviews, custom_events} = usage_by_site(site)
+    pageviews + custom_events
+  end
+
   @doc """
   Returns the number of sites that an account is allowed to have. Accounts for
   grandfathering old accounts to unlimited websites and ignores site limit on self-hosted
