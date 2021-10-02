@@ -142,14 +142,16 @@ defmodule PlausibleWeb.Router do
 
     get "/", PageController, :index
 
-    get "/billing/change-plan", BillingController, :change_plan_form
-    get "/billing/change-plan/preview/:plan_id", BillingController, :change_plan_preview
-    post "/billing/change-plan/:new_plan_id", BillingController, :change_plan
-    get "/billing/upgrade", BillingController, :upgrade
-    get "/billing/upgrade/:plan_id", BillingController, :upgrade_to_plan
-    get "/billing/upgrade/enterprise/:plan_id", BillingController, :upgrade_enterprise_plan
-    get "/billing/change-plan/enterprise/:plan_id", BillingController, :change_enterprise_plan
-    get "/billing/upgrade-success", BillingController, :upgrade_success
+    if !Application.get_env(:plausible, :is_selfhost) do
+      get "/billing/change-plan", BillingController, :change_plan_form
+      get "/billing/change-plan/preview/:plan_id", BillingController, :change_plan_preview
+      post "/billing/change-plan/:new_plan_id", BillingController, :change_plan
+      get "/billing/upgrade", BillingController, :upgrade
+      get "/billing/upgrade/:plan_id", BillingController, :upgrade_to_plan
+      get "/billing/upgrade/enterprise/:plan_id", BillingController, :upgrade_enterprise_plan
+      get "/billing/change-plan/enterprise/:plan_id", BillingController, :change_enterprise_plan
+      get "/billing/upgrade-success", BillingController, :upgrade_success
+    end
 
     get "/sites", SiteController, :index
     get "/sites/new", SiteController, :new
@@ -234,7 +236,18 @@ defmodule PlausibleWeb.Router do
     delete "/:website", SiteController, :delete_site
     delete "/:website/stats", SiteController, :reset_stats
 
+    get "/admin", AdminController, :index
+    get "/admin/users", AdminController, :users
+    post "/admin/users/:userid/end-trial", AdminController, :end_trial
+    post "/admin/users/:userid/start-trial", AdminController, :start_trial
+    post "/admin/users/:userid/free-subscription", AdminController, :free_subscription
+    post "/admin/users/:userid/cancel-subscription", AdminController, :cancel_subscription
+    get "/admin/sites", AdminController, :sites
+    post "/admin/sites/:website/lock", AdminController, :lock_site
+    post "/admin/sites/:website/unlock", AdminController, :unlock_site
+
     get "/:domain/visitors.csv", StatsController, :csv_export
     get "/:domain/*path", StatsController, :stats
+
   end
 end

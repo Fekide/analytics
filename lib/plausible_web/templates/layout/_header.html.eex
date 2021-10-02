@@ -21,7 +21,7 @@
                   <% end %>
                 </li>
               <% end %>
-              <%= if Plausible.Billing.on_trial?(@conn.assigns[:current_user]) do %>
+              <%= if !Application.get_env(:plausible, :is_selfhost) and Plausible.Billing.on_trial?(@conn.assigns[:current_user]) do %>
                 <li class="hidden mr-6 sm:block">
                   <%= link(trial_notificaton(@conn.assigns[:current_user]), to: "/settings", class: "font-bold text-sm text-yellow-900 dark:text-yellow-900 rounded p-2 bg-yellow-100 dark:bg-yellow-100", style: "line-height: 40px;") %>
                 </li>
