@@ -21,6 +21,10 @@ defmodule PlausibleWeb.LayoutView do
     end
   end
 
+  def is_admin(conn) do
+    conn.assigns[:current_user].id in Application.get_env(:plausible, :admin_user_ids)
+  end
+
   def settings_tabs(conn) do
     [
       [key: "General", value: "general"],
@@ -39,6 +43,13 @@ defmodule PlausibleWeb.LayoutView do
       else
         nil
       end
+    ]
+  end
+
+  def admin_tabs(_conn) do
+    [
+      [key: "Users", value: "users"],
+      [key: "Sites", value: "sites"],
     ]
   end
 
