@@ -49,7 +49,7 @@ defmodule PlausibleWeb.LayoutView do
   def admin_tabs(_conn) do
     [
       [key: "Users", value: "users"],
-      [key: "Sites", value: "sites"],
+      [key: "Sites", value: "sites"]
     ]
   end
 

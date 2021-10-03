@@ -248,6 +248,5 @@ defmodule PlausibleWeb.Router do
 
     get "/:domain/visitors.csv", StatsController, :csv_export
     get "/:domain/*path", StatsController, :stats
-
   end
 end

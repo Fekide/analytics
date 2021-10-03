@@ -12,5 +12,4 @@ defmodule PlausibleWeb.AdminView do
     img = "https://www.gravatar.com/avatar/#{hash}?s=150&d=identicon"
     img_tag(img, opts)
   end
-
 end

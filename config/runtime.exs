@@ -198,15 +198,18 @@ config :plausible,
   domain_blacklist: domain_blacklist
 
 # Could not get this nested directly, so now interpretation is put here
-disable_registration = cond do
-  disable_auth or only_invitation_registration -> true
-  true -> disable_registration
-end
-disable_invitation_registration =  cond do
-  disable_auth -> true
-  disable_registration and !only_invitation_registration -> true
-  true -> disable_invitation_registration
-end
+disable_registration =
+  cond do
+    disable_auth or only_invitation_registration -> true
+    true -> disable_registration
+  end
+
+disable_invitation_registration =
+  cond do
+    disable_auth -> true
+    disable_registration and !only_invitation_registration -> true
+    true -> disable_invitation_registration
+  end
 
 config :plausible, :selfhost,
   disable_authentication: disable_auth,
