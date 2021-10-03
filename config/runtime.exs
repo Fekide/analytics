@@ -126,6 +126,16 @@ disable_registration =
   |> get_var_from_path_or_env("DISABLE_REGISTRATION", "false")
   |> String.to_existing_atom()
 
+disable_invitation_registration =
+  config_dir
+  |> get_var_from_path_or_env("DISABLE_INVITATION_REGISTRATION", "false")
+  |> String.to_existing_atom()
+
+only_invitation_registration =
+  config_dir
+  |> get_var_from_path_or_env("ONLY_INVITATION_REGISTRATION", "false")
+  |> String.to_existing_atom()
+
 hcaptcha_sitekey = get_var_from_path_or_env(config_dir, "HCAPTCHA_SITEKEY")
 hcaptcha_secret = get_var_from_path_or_env(config_dir, "HCAPTCHA_SECRET")
 
@@ -187,10 +197,22 @@ config :plausible,
   custom_script_name: custom_script_name,
   domain_blacklist: domain_blacklist
 
+# Could not get this nested directly, so now interpretation is put here
+disable_registration = cond do
+  disable_auth or only_invitation_registration -> true
+  true -> disable_registration
+end
+disable_invitation_registration =  cond do
+  disable_auth -> true
+  disable_registration and !only_invitation_registration -> true
+  true -> disable_invitation_registration
+end
+
 config :plausible, :selfhost,
   disable_authentication: disable_auth,
   enable_email_verification: enable_email_verification,
-  disable_registration: if(!disable_auth, do: disable_registration, else: false)
+  disable_registration: disable_registration,
+  disable_invitation_registration: disable_invitation_registration
 
 config :plausible, PlausibleWeb.Endpoint,
   url: [scheme: base_url.scheme, host: base_url.host, path: base_url.path, port: base_url.port],
