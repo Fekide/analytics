@@ -18,19 +18,30 @@ defmodule Plausible.ClickhouseSession do
     field :events, :integer
     field :sign, :integer
 
+    field :"entry_meta.key", {:array, :string}, default: []
+    field :"entry_meta.value", {:array, :string}, default: []
+
     field :utm_medium, :string
     field :utm_source, :string
     field :utm_campaign, :string
+    field :utm_content, :string
+    field :utm_term, :string
     field :referrer, :string
     field :referrer_source, :string
 
-    field :country_code, :string
+    field :country_code, :string, default: ""
+    field :subdivision1_code, :string, default: ""
+    field :subdivision2_code, :string, default: ""
+    field :city_geoname_id, :integer, default: 0
+
     field :screen_size, :string
     field :operating_system, :string
     field :operating_system_version, :string
     field :browser, :string
     field :browser_version, :string
     field :timestamp, :naive_datetime
+
+    field :transferred_from, :string, default: ""
   end
 
   def random_uint64() do
@@ -56,7 +67,13 @@ defmodule Plausible.ClickhouseSession do
       :utm_medium,
       :utm_source,
       :utm_campaign,
+      :utm_content,
+      :utm_term,
       :country_code,
+      :country_geoname_id,
+      :subdivision1_code,
+      :subdivision2_code,
+      :city_geoname_id,
       :screen_size
     ])
     |> validate_required([:hostname, :domain, :fingerprint, :is_bounce, :start])

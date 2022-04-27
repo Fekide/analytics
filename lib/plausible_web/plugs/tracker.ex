@@ -2,7 +2,17 @@ defmodule PlausibleWeb.Tracker do
   import Plug.Conn
   use Agent
 
-  base_variants = ["hash", "outbound-links", "exclusions", "compat", "local", "manual"]
+  base_variants = [
+    "hash",
+    "outbound-links",
+    "exclusions",
+    "compat",
+    "local",
+    "manual",
+    "file-downloads",
+    "dimensions"
+  ]
+
   base_filenames = ["plausible", "script"]
 
   # Generates Power Set of all variants
@@ -66,6 +76,7 @@ defmodule PlausibleWeb.Tracker do
         |> put_resp_header("x-content-type-options", "nosniff")
         |> put_resp_header("cross-origin-resource-policy", "cross-origin")
         |> put_resp_header("access-control-allow-origin", "*")
+        |> put_resp_header("cache-control", "public, max-age=86400, must-revalidate")
         |> send_file(200, location)
         |> halt()
     end

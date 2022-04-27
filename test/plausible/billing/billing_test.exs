@@ -11,11 +11,22 @@ defmodule Plausible.BillingTest do
       assert Billing.usage(user) == 0
     end
 
-    test "counts the total number of events" do
+    test "counts the total number of events from all sites the user owns" do
       user = insert(:user)
-      insert(:site, domain: "test-site.com", members: [user])
+      site1 = insert(:site, members: [user])
+      site2 = insert(:site, members: [user])
 
-      assert Billing.usage(user) == 3
+      populate_stats(site1, [
+        build(:pageview),
+        build(:pageview)
+      ])
+
+      populate_stats(site2, [
+        build(:pageview),
+        build(:event, name: "custom events")
+      ])
+
+      assert Billing.usage(user) == 4
     end
 
     test "only counts usage from sites where the user is the owner" do
@@ -36,6 +47,52 @@ defmodule Plausible.BillingTest do
       )
 
       assert Billing.usage(user) == 0
+    end
+  end
+
+  describe "sites_limit" do
+    test "is the globally configured site limit for regular accounts" do
+      user = insert(:user, subscription: build(:subscription))
+
+      assert Billing.sites_limit(user) == Application.get_env(:plausible, :site_limit)
+    end
+
+    test "is limited for enterprise customers who have not upgraded yet" do
+      enterprise_plan_paddle_id = "123321"
+
+      user =
+        insert(:user,
+          enterprise_plan: build(:enterprise_plan, paddle_plan_id: enterprise_plan_paddle_id),
+          subscription: build(:subscription, paddle_plan_id: "99999")
+        )
+
+      assert Billing.sites_limit(user) == Application.get_env(:plausible, :site_limit)
+    end
+
+    test "is unlimited for enterprise customers. Their site limit is checked in a background job so as to avoid service disruption" do
+      enterprise_plan_paddle_id = "123321"
+
+      user =
+        insert(:user,
+          enterprise_plan: build(:enterprise_plan, paddle_plan_id: enterprise_plan_paddle_id),
+          subscription: build(:subscription, paddle_plan_id: enterprise_plan_paddle_id)
+        )
+
+      assert Billing.sites_limit(user) == nil
+    end
+
+    test "is unlimited for enterprise customers who are due to change a plan" do
+      enterprise_plan_paddle_id = "123321"
+
+      user =
+        insert(:user,
+          enterprise_plan: build(:enterprise_plan, paddle_plan_id: enterprise_plan_paddle_id),
+          subscription: build(:subscription, paddle_plan_id: enterprise_plan_paddle_id)
+        )
+
+      insert(:enterprise_plan, user_id: user.id, paddle_plan_id: "new-paddle-plan-id")
+
+      assert Billing.sites_limit(user) == nil
     end
   end
 
@@ -218,7 +275,8 @@ defmodule Plausible.BillingTest do
   end
 
   @subscription_id "subscription-123"
-  @plan_id "plan-123"
+  @plan_id_10k "654177"
+  @plan_id_100k "654178"
 
   describe "subscription_created" do
     test "creates a subscription" do
@@ -227,7 +285,7 @@ defmodule Plausible.BillingTest do
       Billing.subscription_created(%{
         "alert_name" => "subscription_created",
         "subscription_id" => @subscription_id,
-        "subscription_plan_id" => @plan_id,
+        "subscription_plan_id" => @plan_id_10k,
         "update_url" => "update_url.com",
         "cancel_url" => "cancel_url.com",
         "passthrough" => user.id,
@@ -252,7 +310,7 @@ defmodule Plausible.BillingTest do
         "email" => user.email,
         "alert_name" => "subscription_created",
         "subscription_id" => @subscription_id,
-        "subscription_plan_id" => @plan_id,
+        "subscription_plan_id" => @plan_id_10k,
         "update_url" => "update_url.com",
         "cancel_url" => "cancel_url.com",
         "status" => "active",
@@ -274,7 +332,7 @@ defmodule Plausible.BillingTest do
       Billing.subscription_created(%{
         "alert_name" => "subscription_created",
         "subscription_id" => @subscription_id,
-        "subscription_plan_id" => @plan_id,
+        "subscription_plan_id" => @plan_id_10k,
         "update_url" => "update_url.com",
         "cancel_url" => "cancel_url.com",
         "passthrough" => user.id,
@@ -293,7 +351,7 @@ defmodule Plausible.BillingTest do
       plan =
         insert(:enterprise_plan,
           user: user,
-          paddle_plan_id: @plan_id,
+          paddle_plan_id: @plan_id_10k,
           hourly_api_request_limit: 10_000
         )
 
@@ -302,7 +360,7 @@ defmodule Plausible.BillingTest do
       Billing.subscription_created(%{
         "alert_name" => "subscription_created",
         "subscription_id" => @subscription_id,
-        "subscription_plan_id" => @plan_id,
+        "subscription_plan_id" => @plan_id_10k,
         "update_url" => "update_url.com",
         "cancel_url" => "cancel_url.com",
         "passthrough" => user.id,
@@ -389,6 +447,66 @@ defmodule Plausible.BillingTest do
       })
 
       assert Repo.reload!(api_key).hourly_request_limit == plan.hourly_api_request_limit
+    end
+
+    test "if user's grace period has ended, upgrading to the proper plan will unlock sites and remove grace period" do
+      user =
+        insert(:user,
+          grace_period: %Plausible.Auth.GracePeriod{
+            end_date: Timex.shift(Timex.today(), days: -1),
+            allowance_required: 11_000
+          }
+        )
+
+      subscription = insert(:subscription, user: user)
+      site = insert(:site, locked: true, members: [user])
+
+      Billing.subscription_updated(%{
+        "alert_name" => "subscription_updated",
+        "subscription_id" => subscription.paddle_subscription_id,
+        "subscription_plan_id" => @plan_id_100k,
+        "update_url" => "update_url.com",
+        "cancel_url" => "cancel_url.com",
+        "passthrough" => user.id,
+        "old_status" => "past_due",
+        "status" => "active",
+        "next_bill_date" => "2019-06-01",
+        "new_unit_price" => "12.00",
+        "currency" => "EUR"
+      })
+
+      assert Repo.reload!(site).locked == false
+      assert Repo.reload!(user).grace_period == nil
+    end
+
+    test "does not remove grace period if upgraded plan allowance is too low" do
+      user =
+        insert(:user,
+          grace_period: %Plausible.Auth.GracePeriod{
+            end_date: Timex.shift(Timex.today(), days: -1),
+            allowance_required: 11_000
+          }
+        )
+
+      subscription = insert(:subscription, user: user)
+      site = insert(:site, locked: true, members: [user])
+
+      Billing.subscription_updated(%{
+        "alert_name" => "subscription_updated",
+        "subscription_id" => subscription.paddle_subscription_id,
+        "subscription_plan_id" => @plan_id_10k,
+        "update_url" => "update_url.com",
+        "cancel_url" => "cancel_url.com",
+        "passthrough" => user.id,
+        "old_status" => "past_due",
+        "status" => "active",
+        "next_bill_date" => "2019-06-01",
+        "new_unit_price" => "12.00",
+        "currency" => "EUR"
+      })
+
+      assert Repo.reload!(site).locked == true
+      assert Repo.reload!(user).grace_period.allowance_required == 11_000
     end
   end
 

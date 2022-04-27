@@ -68,6 +68,15 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       assert pageview.pathname == "/"
     end
 
+    test "returns error if JSON cannot be parsed", %{conn: conn} do
+      conn =
+        conn
+        |> put_req_header("content-type", "text/plain")
+        |> post("/api/event", "")
+
+      assert conn.status == 400
+    end
+
     test "can send to multiple dashboards by listing multiple domains", %{conn: conn} do
       params = %{
         name: "pageview",
@@ -221,6 +230,24 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       assert response(conn, 202) == "ok"
       assert pageview.referrer == "facebook.com/page"
       assert pageview.referrer_source == "Facebook"
+    end
+
+    test "ignores event when referrer is a spammer", %{conn: conn} do
+      params = %{
+        domain: "ignore-spammers-test.com",
+        name: "pageview",
+        url: "http://gigride.live/",
+        referrer: "https://www.1-best-seo.com",
+        screen_width: 1440
+      }
+
+      conn =
+        conn
+        |> put_req_header("user-agent", @user_agent)
+        |> post("/api/event", params)
+
+      assert response(conn, 202) == "ok"
+      assert !get_event("ignore-spammers-test.com")
     end
 
     test "ignores when referrer is internal", %{conn: conn} do
@@ -428,11 +455,10 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
         name: "Signup",
         url: "http://gigride.live/",
         domain: "custom-prop-test.com",
-        props:
-          Jason.encode!(%{
-            bool_test: true,
-            number_test: 12
-          })
+        props: %{
+          bool_test: true,
+          number_test: 12
+        }
       }
 
       conn
@@ -456,6 +482,59 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       |> post("/api/event", params)
 
       event = get_event("custom-prop-test-2.com")
+
+      assert Map.get(event, :"meta.key") == []
+      assert Map.get(event, :"meta.value") == []
+    end
+
+    test "can send props stringified", %{conn: conn} do
+      params = %{
+        name: "Signup",
+        url: "http://gigride.live/",
+        domain: "custom-prop-test-3.com",
+        props: Jason.encode!(%{number_test: 12})
+      }
+
+      conn
+      |> post("/api/event", params)
+
+      event = get_event("custom-prop-test-3.com")
+
+      assert Map.get(event, :"meta.key") == ["number_test"]
+      assert Map.get(event, :"meta.value") == ["12"]
+    end
+
+    test "ignores custom prop with array value", %{conn: conn} do
+      params = %{
+        name: "Signup",
+        url: "http://gigride.live/",
+        domain: "custom-prop-test-4.com",
+        props: Jason.encode!(%{wat: ["some-thing"]})
+      }
+
+      conn = post(conn, "/api/event", params)
+
+      assert conn.status == 202
+
+      event = get_event("custom-prop-test-4.com")
+
+      assert Map.get(event, :"meta.key") == []
+      assert Map.get(event, :"meta.value") == []
+    end
+
+    test "ignores custom prop with map value", %{conn: conn} do
+      params = %{
+        name: "Signup",
+        url: "http://gigride.live/",
+        domain: "custom-prop-test-5.com",
+        props: Jason.encode!(%{foo: %{bar: "baz"}})
+      }
+
+      conn = post(conn, "/api/event", params)
+
+      assert conn.status == 202
+
+      event = get_event("custom-prop-test-5.com")
 
       assert Map.get(event, :"meta.key") == []
       assert Map.get(event, :"meta.value") == []
@@ -495,6 +574,22 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       pageview = get_event("external-controller-test-20.com")
 
       assert pageview.country_code == "US"
+    end
+
+    test "ignores unknown country code ZZ", %{conn: conn} do
+      params = %{
+        name: "pageview",
+        domain: "external-controller-test-zz-country.com",
+        url: "http://gigride.live/"
+      }
+
+      conn
+      |> put_req_header("x-forwarded-for", "0.0.0.0")
+      |> post("/api/event", params)
+
+      pageview = get_event("external-controller-test-zz-country.com")
+
+      assert pageview.country_code == <<0, 0>>
     end
 
     test "scrubs port from x-forwarded-for", %{conn: conn} do
@@ -558,6 +653,23 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       |> post("/api/event", params)
 
       pageview = get_event("external-controller-test-cloudflare.com")
+
+      assert pageview.country_code == "US"
+    end
+
+    test "uses BunnyCDN's custom header for client IP address if present", %{conn: conn} do
+      params = %{
+        name: "pageview",
+        domain: "external-controller-test-bunny.com",
+        url: "http://gigride.live/"
+      }
+
+      conn
+      |> put_req_header("x-forwarded-for", "0.0.0.0")
+      |> put_req_header("b-forwarded-for", "1.1.1.1,9.9.9.9")
+      |> post("/api/event", params)
+
+      pageview = get_event("external-controller-test-bunny.com")
 
       assert pageview.country_code == "US"
     end
@@ -668,6 +780,22 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       assert pageview.hostname == "test.com"
       assert pageview.pathname == "/ﺝﻭﺎﺋﺯ-ﻮﻤﺳﺎﺒﻗﺎﺗ"
       assert pageview.utm_source == "%balle%"
+    end
+
+    test "ignores invalid query param part", %{conn: conn} do
+      params = %{
+        n: "pageview",
+        u:
+          "https://test.com/?utm_source=Bing%20%7C%20Text%20%7C%20Leads%20%7C%20EIGEN%20NAAM-most%20broad%20(Various%20search%20term%20matches)%20%7C%20Afweging,%20Consumptie%20%7C%20T%3A%",
+        d: "invalid-query-test.com"
+      }
+
+      conn = post(conn, "/api/event", params)
+
+      assert conn.status == 202
+
+      pageview = get_event("invalid-query-test.com")
+      assert pageview.utm_source == ""
     end
 
     test "can use double quotes in query params", %{conn: conn} do

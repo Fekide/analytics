@@ -16,6 +16,6 @@ defmodule PlausibleWeb.RequireAdminPlug do
   end
 
   defp admin_user_ids() do
-    Application.get_env(:plausible, :admin_user_ids)
+    Application.get_env(:plausible, :super_admin_user_ids)
   end
 end

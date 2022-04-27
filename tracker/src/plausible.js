@@ -3,7 +3,6 @@
 
   var location = window.location
   var document = window.document
-  var localStorage = window.localStorage
 
   {{#if compat}}
   var scriptEl = document.getElementById('plausible');
@@ -11,7 +10,6 @@
   var scriptEl = document.currentScript;
   {{/if}}
   var endpoint = scriptEl.getAttribute('data-api') || defaultEndpoint(scriptEl)
-  var plausible_ignore = localStorage && localStorage.plausible_ignore;
   {{#if exclusions}}
   var excludedPaths = scriptEl && scriptEl.getAttribute('data-exclude').split(',');
   {{/if}}
@@ -36,18 +34,30 @@
     {{#unless local}}
     if (/^localhost$|^127(\.[0-9]+){0,2}\.[0-9]+$|^\[::1?\]$/.test(location.hostname) || location.protocol === 'file:') return warn('localhost');
     {{/unless}}
-    if (window.phantom || window._phantom || window.__nightmare || window.navigator.webdriver || window.Cypress) return;
-    if (plausible_ignore=="true") return warn('localStorage flag')
+    if (window._phantom || window.__nightmare || window.navigator.webdriver || window.Cypress) return;
+    try {
+      if (window.localStorage.plausible_ignore === 'true') {
+        return warn('localStorage flag')
+      }
+    } catch (e) {
+
+    }
     {{#if exclusions}}
-    if (excludedPaths)
-      for (var i = 0; i < excludedPaths.length; i++)
-        if (eventName == "pageview" && location.pathname.match(new RegExp('^' + excludedPaths[i].trim().replace(/\*\*/g, '.*').replace(/([^\.])\*/g, '$1[^\\s\/]*') + '\/?$')))
+    if (excludedPaths) {
+      for (var i = 0; i < excludedPaths.length; i++) {
+        if (eventName === 'pageview' && location.pathname.match(new RegExp('^' + excludedPaths[i].trim().replace(/\*\*/g, '.*').replace(/([^\.])\*/g, '$1[^\\s\/]*') + '\/?$')))
           return warn('exclusion rule');
+      }
+    }
     {{/if}}
 
     var payload = {}
     payload.n = eventName
+    {{#if manual}}
+    payload.u = options && options.u ? options.u : location.href
+    {{else}}
     payload.u = location.href
+    {{/if}}
     payload.d = scriptEl.getAttribute('data-domain')
     payload.r = document.referrer || null
     payload.w = window.innerWidth
@@ -55,8 +65,25 @@
       payload.m = JSON.stringify(options.meta)
     }
     if (options && options.props) {
-      payload.p = JSON.stringify(options.props)
+      payload.p = options.props
     }
+
+    {{#if dimensions}}
+    var dimensionAttributes = scriptEl.getAttributeNames().filter(function (name) {
+      return name.substring(0, 6) === 'event-'
+    })
+
+    var props = payload.p || {}
+
+    dimensionAttributes.forEach(function(attribute) {
+      var propKey = attribute.replace('event-', '')
+      var propValue = scriptEl.getAttribute(attribute)
+      props[propKey] = props[propKey] || propValue
+    })
+
+    payload.p = props
+    {{/if}}
+
     {{#if hash}}
     payload.h = 1
     {{/if}}
@@ -68,7 +95,7 @@
     request.send(JSON.stringify(payload));
 
     request.onreadystatechange = function() {
-      if (request.readyState == 4) {
+      if (request.readyState === 4) {
         options && options.callback && options.callback()
       }
     }
@@ -77,15 +104,16 @@
   {{#if outbound_links}}
   function handleOutbound(event) {
     var link = event.target;
-    var middle = event.type == "auxclick" && event.which == 2;
-    var click = event.type == "click";
-      while(link && (typeof link.tagName == 'undefined' || link.tagName.toLowerCase() != 'a' || !link.href)) {
+    var middle = event.type === 'auxclick' && event.which === 2;
+    var click = event.type === 'click';
+      while(link && (typeof link.tagName === 'undefined' || link.tagName.toLowerCase() !== 'a' || !link.href)) {
         link = link.parentNode
       }
 
       if (link && link.href && link.host && link.host !== location.host) {
-        if (middle || click)
-        plausible('Outbound Link: Click', {props: {url: link.href}})
+        if (middle || click) {
+          plausible('Outbound Link: Click', {props: {url: link.href}})
+        }
 
         // Delay navigation so that Plausible is notified of the click
         if(!link.target || link.target.match(/^_(self|parent|top)$/i)) {
@@ -107,6 +135,52 @@
 
   {{#if outbound_links}}
   registerOutboundLinkEvents()
+  {{/if}}
+
+  {{#if file_downloads}}
+  var defaultFileTypes = ['pdf', 'xlsx', 'docx', 'txt', 'rtf', 'csv', 'exe', 'key', 'pps', 'ppt', 'pptx', '7z', 'pkg', 'rar', 'gz', 'zip', 'avi', 'mov', 'mp4', 'mpeg', 'wmv', 'midi', 'mp3', 'wav', 'wma']
+  var fileTypesAttr = scriptEl.getAttribute('file-types')
+  var addFileTypesAttr = scriptEl.getAttribute('add-file-types')
+  var fileTypesToTrack = (fileTypesAttr && fileTypesAttr.split(",")) || (addFileTypesAttr && addFileTypesAttr.split(",").concat(defaultFileTypes)) || defaultFileTypes;
+
+  function handleDownload(event) {
+    
+    var link = event.target;
+    var middle = event.type === 'auxclick' && event.which === 2;
+    var click = event.type === 'click';
+
+    while(link && (typeof link.tagName === 'undefined' || link.tagName.toLowerCase() !== 'a' || !link.href)) {
+      link = link.parentNode
+    }
+
+    var linkTarget = link && link.href && link.href.split('?')[0]
+    if (linkTarget && isDownloadToTrack(linkTarget)) {
+
+      if (middle || click) {
+        plausible('File Download', {props: {url: linkTarget}})
+      }
+
+      // Delay navigation so that Plausible is notified of the click
+      if(!link.target || link.target.match(/^_(self|parent|top)$/i)) {
+        if (!(event.ctrlKey || event.metaKey || event.shiftKey) && click) {
+          setTimeout(function() {
+            location.href = link.href;
+          }, 150);
+          event.preventDefault();
+        }
+      }
+    }
+  }
+
+  function isDownloadToTrack(url) {
+    var fileType = url.split('.').pop();
+    return fileTypesToTrack.some(function(fileTypeToTrack) {
+      return fileTypeToTrack === fileType
+    })
+  }
+
+  document.addEventListener('click', handleDownload);
+  document.addEventListener('auxclick', handleDownload);
   {{/if}}
 
   var queue = (window.plausible && window.plausible.q) || []
@@ -148,7 +222,7 @@
 
 
     if (document.visibilityState === 'prerender') {
-      document.addEventListener("visibilitychange", handleVisibilityChange);
+      document.addEventListener('visibilitychange', handleVisibilityChange);
     } else {
       page()
     }

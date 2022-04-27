@@ -4,6 +4,22 @@ defimpl Bamboo.Formatter, for: Plausible.Auth.User do
   end
 end
 
+defimpl FunWithFlags.Actor, for: Plausible.Auth.User do
+  def id(%{id: id}) do
+    "user:#{id}"
+  end
+end
+
+defmodule Plausible.Auth.GracePeriod do
+  use Ecto.Schema
+
+  embedded_schema do
+    field :end_date, :date
+    field :allowance_required, :integer
+    field :is_over, :boolean
+  end
+end
+
 defmodule Plausible.Auth.User do
   use Ecto.Schema
   import Ecto.Changeset
@@ -19,6 +35,7 @@ defmodule Plausible.Auth.User do
     field :trial_expiry_date, :date
     field :theme, :string
     field :email_verified, :boolean
+    embeds_one :grace_period, Plausible.Auth.GracePeriod, on_replace: :update
 
     has_many :site_memberships, Plausible.Site.Membership
     has_many :sites, through: [:site_memberships, :site]
@@ -77,6 +94,24 @@ defmodule Plausible.Auth.User do
 
   def end_trial(user) do
     change(user, trial_expiry_date: Timex.today() |> Timex.shift(days: -1))
+  end
+
+  def start_grace_period(user, allowance_required) do
+    grace_period = %Plausible.Auth.GracePeriod{
+      end_date: Timex.today() |> Timex.shift(days: 7),
+      allowance_required: allowance_required,
+      is_over: false
+    }
+
+    change(user, grace_period: grace_period)
+  end
+
+  def end_grace_period(user) do
+    change(user, grace_period: %{is_over: true})
+  end
+
+  def remove_grace_period(user) do
+    change(user, grace_period: nil)
   end
 
   defp trial_expiry() do

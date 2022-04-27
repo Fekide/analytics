@@ -18,14 +18,17 @@ config :plausible,
   paddle_api: Plausible.PaddleApi.Mock,
   google_api: Plausible.Google.Api.Mock
 
+config :bamboo, :refute_timeout, 10
+
 config :geolix,
   databases: [
     %{
-      id: :country,
+      id: :geolocation,
       adapter: Geolix.Adapter.Fake,
       data: %{
         {1, 1, 1, 1} => %{country: %{iso_code: "US"}},
-        {1, 1, 1, 1, 1, 1, 1, 1} => %{country: %{iso_code: "US"}}
+        {1, 1, 1, 1, 1, 1, 1, 1} => %{country: %{iso_code: "US"}},
+        {0, 0, 0, 0} => %{country: %{iso_code: "ZZ"}}
       }
     }
   ]

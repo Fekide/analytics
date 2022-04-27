@@ -1,7 +1,6 @@
 defmodule Plausible.Billing do
   use Plausible.Repo
   alias Plausible.Billing.{Subscription, PaddleApi}
-  use Plausible.ClickhouseRepo
 
   def active_subscription_for(user_id) do
     Repo.get_by(Subscription, user_id: user_id, status: "active")
@@ -18,19 +17,28 @@ defmodule Plausible.Billing do
 
     changeset = Subscription.changeset(%Subscription{}, format_subscription(params))
 
-    Repo.insert(changeset)
-    |> check_lock_status
-    |> maybe_adjust_api_key_limits
+    Repo.insert(changeset) |> after_subscription_update
   end
 
   def subscription_updated(params) do
     subscription = Repo.get_by!(Subscription, paddle_subscription_id: params["subscription_id"])
     changeset = Subscription.changeset(subscription, format_subscription(params))
 
-    Repo.update(changeset)
+    Repo.update(changeset) |> after_subscription_update
+  end
+
+  defp after_subscription_update({:ok, subscription}) do
+    user =
+      Repo.get(Plausible.Auth.User, subscription.user_id)
+      |> Map.put(:subscription, subscription)
+
+    {:ok, user}
+    |> maybe_remove_grace_period
     |> check_lock_status
     |> maybe_adjust_api_key_limits
   end
+
+  defp after_subscription_update(err), do: err
 
   def subscription_cancelled(params) do
     subscription =
@@ -46,7 +54,7 @@ defmodule Plausible.Billing do
       case Repo.update(changeset) do
         {:ok, updated} ->
           PlausibleWeb.Email.cancellation_email(subscription.user)
-          |> Plausible.Mailer.send_email()
+          |> Plausible.Mailer.send_email_safe()
 
           {:ok, updated}
 
@@ -108,13 +116,19 @@ defmodule Plausible.Billing do
     PaddleApi.update_subscription_preview(subscription.paddle_subscription_id, new_plan_id)
   end
 
-  def needs_to_upgrade?(%Plausible.Auth.User{trial_expiry_date: nil}), do: true
+  def needs_to_upgrade?(%Plausible.Auth.User{trial_expiry_date: nil}), do: {true, :no_trial}
 
   def needs_to_upgrade?(user) do
-    if Timex.before?(user.trial_expiry_date, Timex.today()) do
-      !subscription_is_active?(user.subscription)
-    else
-      false
+    trial_is_over = Timex.before?(user.trial_expiry_date, Timex.today())
+    subscription_active = subscription_is_active?(user.subscription)
+
+    grace_period_ended =
+      user.grace_period && Timex.before?(user.grace_period.end_date, Timex.today())
+
+    cond do
+      trial_is_over && !subscription_active -> {true, :no_active_subscription}
+      grace_period_ended -> {true, :grace_period_ended}
+      true -> false
     end
   end
 
@@ -143,25 +157,19 @@ defmodule Plausible.Billing do
     pageviews + custom_events
   end
 
-  defp get_usage_for_billing_cycle(sites, cycle) do
-    domains = Enum.map(sites, & &1.domain)
-
-    ClickhouseRepo.one(
-      from e in "events",
-        where: e.domain in ^domains,
-        where: fragment("toDate(?)", e.timestamp) >= ^cycle.first,
-        where: fragment("toDate(?)", e.timestamp) <= ^cycle.last,
-        select: fragment("count(*)")
-    )
-  end
-
   def last_two_billing_months_usage(user, today \\ Timex.today()) do
     {first, second} = last_two_billing_cycles(user, today)
     sites = Plausible.Sites.owned_by(user)
 
+    usage_for_sites = fn sites, date_range ->
+      domains = Enum.map(sites, & &1.domain)
+      {pageviews, custom_events} = Plausible.Stats.Clickhouse.usage_breakdown(domains, date_range)
+      pageviews + custom_events
+    end
+
     {
-      get_usage_for_billing_cycle(sites, first),
-      get_usage_for_billing_cycle(sites, second)
+      usage_for_sites.(sites, first),
+      usage_for_sites.(sites, second)
     }
   end
 
@@ -186,20 +194,12 @@ defmodule Plausible.Billing do
   end
 
   def usage_breakdown(user) do
-    sites = Plausible.Sites.owned_by(user)
-
-    Enum.reduce(sites, {0, 0}, fn site, {pageviews, custom_events} ->
-      usage = Plausible.Stats.Clickhouse.usage(site)
-
-      {pageviews + Map.get(usage, "pageviews", 0),
-       custom_events + Map.get(usage, "custom_events", 0)}
-    end)
+    domains = Plausible.Sites.owned_by(user) |> Enum.map(& &1.domain)
+    Plausible.Stats.Clickhouse.usage_breakdown(domains)
   end
 
   def usage_by_site(site) do
-    usage = Plausible.Stats.Clickhouse.usage(site)
-
-    {Map.get(usage, "pageviews", 0), Map.get(usage, "custom_events", 0)}
+    Plausible.Stats.Clickhouse.usage_breakdown([site.domain])
   end
 
   def usage_by_site_total(site) do
@@ -214,12 +214,39 @@ defmodule Plausible.Billing do
   """
   @limit_accounts_since ~D[2021-05-05]
   def sites_limit(user) do
+    user = Plausible.Repo.preload(user, :enterprise_plan)
+
     cond do
-      Timex.before?(user.inserted_at, @limit_accounts_since) -> nil
-      Application.get_env(:plausible, :is_selfhost) -> nil
-      user.email in Application.get_env(:plausible, :site_limit_exempt) -> nil
-      true -> Application.get_env(:plausible, :site_limit)
+      Timex.before?(user.inserted_at, @limit_accounts_since) ->
+        nil
+
+      Application.get_env(:plausible, :is_selfhost) ->
+        nil
+
+      user.email in Application.get_env(:plausible, :site_limit_exempt) ->
+        nil
+
+      user.enterprise_plan ->
+        if has_active_enterprise_subscription(user) do
+          nil
+        else
+          Application.get_env(:plausible, :site_limit)
+        end
+
+      true ->
+        Application.get_env(:plausible, :site_limit)
     end
+  end
+
+  defp has_active_enterprise_subscription(user) do
+    Plausible.Repo.exists?(
+      from s in Plausible.Billing.Subscription,
+        join: e in Plausible.Billing.EnterprisePlan,
+        on: s.user_id == e.user_id and s.paddle_plan_id == e.paddle_plan_id,
+        where: s.user_id == ^user.id,
+        where: s.paddle_plan_id == ^user.enterprise_plan.paddle_plan_id,
+        where: s.status == "active"
+    )
   end
 
   defp format_subscription(params) do
@@ -240,34 +267,51 @@ defmodule Plausible.Billing do
   defp present?(nil), do: false
   defp present?(_), do: true
 
-  defp check_lock_status({:ok, subscription}) do
-    user =
-      Repo.get(Plausible.Auth.User, subscription.user_id)
-      |> Map.put(:subscription, subscription)
+  defp maybe_remove_grace_period({:ok, user}) do
+    alias Plausible.Auth.GracePeriod
 
+    case user.grace_period do
+      %GracePeriod{allowance_required: allowance_required} ->
+        new_allowance = Plausible.Billing.Plans.allowance(user.subscription)
+
+        if new_allowance > allowance_required do
+          Plausible.Auth.User.remove_grace_period(user)
+          |> Repo.update()
+        else
+          {:ok, user}
+        end
+
+      _ ->
+        {:ok, user}
+    end
+  end
+
+  defp maybe_remove_grace_period(err), do: err
+
+  defp check_lock_status({:ok, user}) do
     Plausible.Billing.SiteLocker.check_sites_for(user)
-    {:ok, subscription}
+    {:ok, user}
   end
 
   defp check_lock_status(err), do: err
 
-  defp maybe_adjust_api_key_limits({:ok, subscription}) do
+  defp maybe_adjust_api_key_limits({:ok, user}) do
     plan =
       Repo.get_by(Plausible.Billing.EnterprisePlan,
-        user_id: subscription.user_id,
-        paddle_plan_id: subscription.paddle_plan_id
+        user_id: user.id,
+        paddle_plan_id: user.subscription.paddle_plan_id
       )
 
     if plan do
-      user_id = subscription.user_id
+      user_id = user.id
       api_keys = from(key in Plausible.Auth.ApiKey, where: key.user_id == ^user_id)
       Repo.update_all(api_keys, set: [hourly_request_limit: plan.hourly_api_request_limit])
     end
 
-    {:ok, subscription}
+    {:ok, user}
   end
 
   defp maybe_adjust_api_key_limits(err), do: err
 
-  defp paddle_api(), do: Application.fetch_env!(:plausible, :paddle_api)
+  def paddle_api(), do: Application.fetch_env!(:plausible, :paddle_api)
 end

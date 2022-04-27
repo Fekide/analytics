@@ -41,26 +41,43 @@ defmodule PlausibleWeb.Router do
     plug PlausibleWeb.Firewall
   end
 
-  if Application.get_env(:plausible, :environment) == "dev" do
+  pipeline :flags do
+    plug :accepts, ["html"]
+    plug :put_secure_browser_headers
+    plug :fetch_session
+    plug PlausibleWeb.CRMAuthPlug
+  end
+
+  if Mix.env() == :dev do
     forward "/sent-emails", Bamboo.SentEmailViewerPlug
   end
 
   use Kaffy.Routes, scope: "/crm", pipe_through: [PlausibleWeb.CRMAuthPlug]
+
+  scope path: "/flags" do
+    pipe_through :flags
+    forward "/", FunWithFlags.UI.Router, namespace: "flags"
+  end
 
   scope "/api/stats", PlausibleWeb.Api do
     pipe_through :internal_stats_api
 
     get "/:domain/current-visitors", StatsController, :current_visitors
     get "/:domain/main-graph", StatsController, :main_graph
+    get "/:domain/top-stats", StatsController, :top_stats
     get "/:domain/sources", StatsController, :sources
     get "/:domain/utm_mediums", StatsController, :utm_mediums
     get "/:domain/utm_sources", StatsController, :utm_sources
     get "/:domain/utm_campaigns", StatsController, :utm_campaigns
+    get "/:domain/utm_contents", StatsController, :utm_contents
+    get "/:domain/utm_terms", StatsController, :utm_terms
     get "/:domain/referrers/:referrer", StatsController, :referrer_drilldown
     get "/:domain/pages", StatsController, :pages
     get "/:domain/entry-pages", StatsController, :entry_pages
     get "/:domain/exit-pages", StatsController, :exit_pages
     get "/:domain/countries", StatsController, :countries
+    get "/:domain/regions", StatsController, :regions
+    get "/:domain/cities", StatsController, :cities
     get "/:domain/browsers", StatsController, :browsers
     get "/:domain/browser-versions", StatsController, :browser_versions
     get "/:domain/operating-systems", StatsController, :operating_systems
@@ -84,7 +101,10 @@ defmodule PlausibleWeb.Router do
     pipe_through [:public_api, PlausibleWeb.AuthorizeSitesApiPlug]
 
     post "/", ExternalSitesController, :create_site
+    delete "/:site_id", ExternalSitesController, :delete_site
     put "/shared-links", ExternalSitesController, :find_or_create_shared_link
+    put "/goals", ExternalSitesController, :find_or_create_goal
+    delete "/goals/:goal_id", ExternalSitesController, :delete_goal
   end
 
   scope "/api", PlausibleWeb do
@@ -121,7 +141,7 @@ defmodule PlausibleWeb.Router do
   scope "/", PlausibleWeb do
     pipe_through [:shared_link]
 
-    get "/share/:slug", StatsController, :shared_link
+    get "/share/:domain", StatsController, :shared_link
     post "/share/:slug/authenticate", StatsController, :authenticate_shared_link
   end
 
@@ -195,10 +215,6 @@ defmodule PlausibleWeb.Router do
     put "/sites/:website/shared-links/:slug", SiteController, :update_shared_link
     delete "/sites/:website/shared-links/:slug", SiteController, :delete_shared_link
 
-    get "/sites/:website/custom-domains/new", SiteController, :new_custom_domain
-    get "/sites/:website/custom-domains/dns-setup", SiteController, :custom_domain_dns_setup
-    get "/sites/:website/custom-domains/snippet", SiteController, :custom_domain_snippet
-    post "/sites/:website/custom-domains", SiteController, :add_custom_domain
     delete "/sites/:website/custom-domains/:id", SiteController, :delete_custom_domain
 
     get "/sites/:website/memberships/invite", Site.MembershipController, :invite_member_form
@@ -232,7 +248,8 @@ defmodule PlausibleWeb.Router do
     delete "/:website/goals/:id", SiteController, :delete_goal
     put "/:website/settings", SiteController, :update_settings
     put "/:website/settings/google", SiteController, :update_google_auth
-    delete "/:website/settings/google", SiteController, :delete_google_auth
+    delete "/:website/settings/google-search", SiteController, :delete_google_auth
+    delete "/:website/settings/google-import", SiteController, :delete_google_auth
     delete "/:website", SiteController, :delete_site
     delete "/:website/stats", SiteController, :reset_stats
 
@@ -246,7 +263,21 @@ defmodule PlausibleWeb.Router do
     post "/admin/sites/:website/lock", AdminController, :lock_site
     post "/admin/sites/:website/unlock", AdminController, :unlock_site
 
-    get "/:domain/visitors.csv", StatsController, :csv_export
+    get "/:website/import/google-analytics/view-id",
+        SiteController,
+        :import_from_google_view_id_form
+
+    post "/:website/import/google-analytics/view-id", SiteController, :import_from_google_view_id
+
+    get "/:website/import/google-analytics/user-metric",
+        SiteController,
+        :import_from_google_user_metric_notice
+
+    get "/:website/import/google-analytics/confirm", SiteController, :import_from_google_confirm
+    post "/:website/settings/google-import", SiteController, :import_from_google
+    delete "/:website/settings/forget-imported", SiteController, :forget_imported
+
+    get "/:domain/export", StatsController, :csv_export
     get "/:domain/*path", StatsController, :stats
   end
 end

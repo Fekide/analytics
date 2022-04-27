@@ -5,7 +5,14 @@ defmodule PlausibleWeb.AuthController do
   require Logger
 
   plug PlausibleWeb.RequireLoggedOutPlug
-       when action in [:register_form, :register, :login_form, :login]
+       when action in [
+              :register_form,
+              :register,
+              :register_from_invitation_form,
+              :register_from_invitation,
+              :login_form,
+              :login
+            ]
 
   plug PlausibleWeb.RequireAccountPlug
        when action in [
@@ -19,8 +26,7 @@ defmodule PlausibleWeb.AuthController do
 
   def register_form(conn, _params) do
     if Keyword.fetch!(Application.get_env(:plausible, :selfhost), :disable_registration) do
-      conn
-      |> redirect(to: "/login")
+      redirect(conn, to: Routes.auth_path(conn, :login_form))
     else
       changeset = Plausible.Auth.User.changeset(%Plausible.Auth.User{})
 
@@ -33,8 +39,7 @@ defmodule PlausibleWeb.AuthController do
 
   def register(conn, params) do
     if Keyword.fetch!(Application.get_env(:plausible, :selfhost), :disable_registration) do
-      conn
-      |> redirect(to: "/login")
+      redirect(conn, to: Routes.auth_path(conn, :login_form))
     else
       user = Plausible.Auth.User.new(params["user"])
 
@@ -46,10 +51,10 @@ defmodule PlausibleWeb.AuthController do
             case user.email_verified do
               false ->
                 send_email_verification(user)
-                redirect(conn, to: "/activate")
+                redirect(conn, to: Routes.auth_path(conn, :activate_form))
 
               true ->
-                redirect(conn, to: "/sites/new")
+                redirect(conn, to: Routes.site_path(conn, :new))
             end
 
           {:error, changeset} ->
@@ -69,12 +74,8 @@ defmodule PlausibleWeb.AuthController do
   end
 
   def register_from_invitation_form(conn, %{"invitation_id" => invitation_id}) do
-    if Keyword.fetch!(
-         Application.get_env(:plausible, :selfhost),
-         :disable_invitation_registration
-       ) do
-      conn
-      |> redirect(to: "/login")
+    if Keyword.fetch!(Application.get_env(:plausible, :selfhost), :disable_invitation_registration) do
+      redirect(conn, to: Routes.auth_path(conn, :login_form))
     else
       invitation = Repo.get_by(Plausible.Auth.Invitation, invitation_id: invitation_id)
       changeset = Plausible.Auth.User.changeset(%Plausible.Auth.User{})
@@ -87,18 +88,17 @@ defmodule PlausibleWeb.AuthController do
           skip_plausible_tracking: true
         )
       else
-        render(conn, "invitation_expired.html", layout: {PlausibleWeb.LayoutView, "focus.html"})
+        render(conn, "invitation_expired.html",
+          layout: {PlausibleWeb.LayoutView, "focus.html"},
+          skip_plausible_tracking: true
+        )
       end
     end
   end
 
   def register_from_invitation(conn, %{"invitation_id" => invitation_id} = params) do
-    if Keyword.fetch!(
-         Application.get_env(:plausible, :selfhost),
-         :disable_invitation_registration
-       ) do
-      conn
-      |> redirect(to: "/login")
+    if Keyword.fetch!(Application.get_env(:plausible, :selfhost), :disable_invitation_registration) do
+      redirect(conn, to: Routes.auth_path(conn, :login_form))
     else
       invitation = Repo.get_by(Plausible.Auth.Invitation, invitation_id: invitation_id)
       user = Plausible.Auth.User.new(params["user"])
@@ -117,17 +117,18 @@ defmodule PlausibleWeb.AuthController do
             case user.email_verified do
               false ->
                 send_email_verification(user)
-                redirect(conn, to: "/activate")
+                redirect(conn, to: Routes.auth_path(conn, :activate_form))
 
               true ->
-                redirect(conn, to: "/sites")
+                redirect(conn, to: Routes.site_path(conn, :index))
             end
 
           {:error, changeset} ->
             render(conn, "register_from_invitation_form.html",
               invitation: invitation,
               changeset: changeset,
-              layout: {PlausibleWeb.LayoutView, "focus.html"}
+              layout: {PlausibleWeb.LayoutView, "focus.html"},
+              skip_plausible_tracking: true
             )
         end
       else
@@ -135,7 +136,8 @@ defmodule PlausibleWeb.AuthController do
           invitation: invitation,
           changeset: user,
           captcha_error: "Please complete the captcha to register",
-          layout: {PlausibleWeb.LayoutView, "focus.html"}
+          layout: {PlausibleWeb.LayoutView, "focus.html"},
+          skip_plausible_tracking: true
         )
       end
     end
@@ -193,9 +195,9 @@ defmodule PlausibleWeb.AuthController do
     case Auth.verify_email(user, code) do
       :ok ->
         if has_invitation do
-          redirect(conn, to: "/sites")
+          redirect(conn, to: Routes.site_path(conn, :index))
         else
-          redirect(conn, to: "/sites/new")
+          redirect(conn, to: Routes.site_path(conn, :new))
         end
 
       {:error, :incorrect} ->
@@ -225,7 +227,7 @@ defmodule PlausibleWeb.AuthController do
 
     conn
     |> put_flash(:success, "Activation code was sent to #{user.email}")
-    |> redirect(to: "/activate")
+    |> redirect(to: Routes.auth_path(conn, :activate_form))
   end
 
   def password_reset_request_form(conn, _) do
@@ -250,7 +252,7 @@ defmodule PlausibleWeb.AuthController do
         url = PlausibleWeb.Endpoint.url() <> "/password/reset?token=#{token}"
         Logger.debug("PASSWORD RESET LINK: " <> url)
         email_template = PlausibleWeb.Email.password_reset_email(email, url)
-        Plausible.Mailer.deliver_now!(email_template)
+        Plausible.Mailer.deliver_later(email_template)
 
         render(conn, "password_reset_request_success.html",
           email: email,
@@ -307,7 +309,7 @@ defmodule PlausibleWeb.AuthController do
             |> put_flash(:login_instructions, "Please log in with your new credentials")
             |> put_session(:current_user_id, nil)
             |> delete_resp_cookie("logged_in")
-            |> redirect(to: "/login")
+            |> redirect(to: Routes.auth_path(conn, :login_form))
 
           {:error, changeset} ->
             render(conn, "password_reset_form.html",
@@ -338,7 +340,7 @@ defmodule PlausibleWeb.AuthController do
          {:ok, user} <- find_user(email),
          :ok <- check_user_rate_limit(user),
          :ok <- check_password(user, password) do
-      login_dest = get_session(conn, :login_dest) || "/sites"
+      login_dest = get_session(conn, :login_dest) || Routes.site_path(conn, :index)
 
       conn
       |> put_session(:current_user_id, user.id)
@@ -435,16 +437,17 @@ defmodule PlausibleWeb.AuthController do
   end
 
   def user_settings(conn, _params) do
-    changeset = Auth.User.changeset(conn.assigns[:current_user])
+    user = conn.assigns[:current_user]
+    changeset = Auth.User.changeset(user)
 
-    {usage_pageviews, usage_custom_events} =
-      Plausible.Billing.usage_breakdown(conn.assigns[:current_user])
+    {usage_pageviews, usage_custom_events} = Plausible.Billing.usage_breakdown(user)
 
     render(conn, "user_settings.html",
-      user: conn.assigns[:current_user] |> Repo.preload(:api_keys),
+      user: user |> Repo.preload(:api_keys),
       changeset: changeset,
-      subscription: conn.assigns[:current_user].subscription,
-      theme: conn.assigns[:current_user].theme || "system",
+      subscription: user.subscription,
+      invoices: Plausible.Billing.paddle_api().get_invoices(user.subscription),
+      theme: user.theme || "system",
       usage_pageviews: usage_pageviews,
       usage_custom_events: usage_custom_events
     )
@@ -457,7 +460,7 @@ defmodule PlausibleWeb.AuthController do
       {:ok, _user} ->
         conn
         |> put_flash(:success, "Account settings saved successfully")
-        |> redirect(to: "/settings")
+        |> redirect(to: Routes.auth_path(conn, :user_settings))
 
       {:error, changeset} ->
         render(conn, "user_settings.html",
@@ -514,7 +517,7 @@ defmodule PlausibleWeb.AuthController do
       Repo.delete!(membership)
 
       if membership.role == :owner do
-        Repo.delete!(membership.site)
+        Plausible.Sites.delete!(membership.site)
       end
     end
 
@@ -533,24 +536,38 @@ defmodule PlausibleWeb.AuthController do
     |> redirect(to: redirect_to)
   end
 
-  def google_auth_callback(conn, %{"code" => code, "state" => site_id}) do
+  def google_auth_callback(conn, %{"code" => code, "state" => state}) do
     res = Plausible.Google.Api.fetch_access_token(code)
-    id_token = res["id_token"]
-    [_, body, _] = String.split(id_token, ".")
-    id = body |> Base.decode64!(padding: false) |> Jason.decode!()
-
-    Plausible.Site.GoogleAuth.changeset(%Plausible.Site.GoogleAuth{}, %{
-      email: id["email"],
-      refresh_token: res["refresh_token"],
-      access_token: res["access_token"],
-      expires: NaiveDateTime.utc_now() |> NaiveDateTime.add(res["expires_in"]),
-      user_id: conn.assigns[:current_user].id,
-      site_id: site_id
-    })
-    |> Repo.insert!()
-
+    [site_id, redirect_to] = Jason.decode!(state)
     site = Repo.get(Plausible.Site, site_id)
 
-    redirect(conn, to: "/#{URI.encode_www_form(site.domain)}/settings/search-console")
+    case redirect_to do
+      "import" ->
+        redirect(conn,
+          to:
+            Routes.site_path(conn, :import_from_google_view_id_form, site.domain,
+              access_token: res["access_token"]
+            )
+        )
+
+      _ ->
+        id_token = res["id_token"]
+        [_, body, _] = String.split(id_token, ".")
+        id = body |> Base.decode64!(padding: false) |> Jason.decode!()
+
+        Plausible.Site.GoogleAuth.changeset(%Plausible.Site.GoogleAuth{}, %{
+          email: id["email"],
+          refresh_token: res["refresh_token"],
+          access_token: res["access_token"],
+          expires: NaiveDateTime.utc_now() |> NaiveDateTime.add(res["expires_in"]),
+          user_id: conn.assigns[:current_user].id,
+          site_id: site_id
+        })
+        |> Repo.insert!()
+
+        site = Repo.get(Plausible.Site, site_id)
+
+        redirect(conn, to: "/#{URI.encode_www_form(site.domain)}/settings/#{redirect_to}")
+    end
   end
 end

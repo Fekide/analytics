@@ -1,4 +1,4 @@
-import {formatISO} from './date'
+import {formatISO} from './util/date'
 
 let abortController = new AbortController()
 let SHARED_LINK_AUTH = null
@@ -42,6 +42,7 @@ export function serializeQuery(query, extraQuery=[]) {
   if (query.from)    { queryObj.from = formatISO(query.from)  }
   if (query.to)      { queryObj.to = formatISO(query.to)  }
   if (query.filters) { queryObj.filters = serializeFilters(query.filters)  }
+  if (query.with_imported) { queryObj.with_imported = query.with_imported  }
   if (SHARED_LINK_AUTH) { queryObj.auth = SHARED_LINK_AUTH }
   Object.assign(queryObj, ...extraQuery)
 

@@ -1,7 +1,6 @@
 import React, { Fragment } from "react";
 import { withRouter } from 'react-router-dom'
 import classNames from 'classnames'
-import Datamap from 'datamaps'
 import { Menu, Transition } from '@headlessui/react'
 import { ChevronDownIcon } from '@heroicons/react/solid'
 
@@ -9,34 +8,90 @@ import SearchSelect from '../../components/search-select'
 import Modal from './modal'
 import { parseQuery, formattedFilters } from '../../query'
 import * as api from '../../api'
-import {apiPath, sitePath} from '../../url'
+import {apiPath, siteBasePath} from '../../util/url'
 
 export const FILTER_GROUPS = {
-  'page': ['page'],
+  'page': ['page', 'entry_page', 'exit_page'],
   'source': ['source', 'referrer'],
-  'country': ['country'],
+  'location': ['country', 'region', 'city'],
   'screen': ['screen'],
   'browser': ['browser', 'browser_version'],
   'os': ['os', 'os_version'],
-  'utm': ['utm_medium', 'utm_source', 'utm_campaign'],
-  'entry_page': ['entry_page'],
-  'exit_page': ['exit_page'],
-  'goal': ['goal']
-}
-
-function getCountryName(ISOCode) {
-  const allCountries = Datamap.prototype.worldTopo.objects.world.geometries;
-  const selectedCountry = allCountries.find((c) => c.id === ISOCode);
-  return selectedCountry && selectedCountry.properties.name
+  'utm': ['utm_medium', 'utm_source', 'utm_campaign', 'utm_term', 'utm_content'],
+  'goal': ['goal'],
+  'props': ['prop_key', 'prop_value']
 }
 
 function getFormState(filterGroup, query) {
+  if (filterGroup === 'props') {
+    const propsObject = query.filters['props']
+    const entries = propsObject && Object.entries(propsObject)
+
+    if (entries && entries.length == 1) {
+      const propKey = entries[0][0]
+      const propValue = valueWithoutPrefix(entries[0][1])
+
+      return {
+        'prop_key': {name: propKey, value: propKey, type: FILTER_TYPES.is},
+        'prop_value': {name: propValue, value: propValue, type: toFilterType(entries[0][1])}
+      }
+    }
+  }
+
   return FILTER_GROUPS[filterGroup].reduce((result, filter) => {
-    let filterValue = query.filters[filter] || ''
-    const type = filterValue[0] === '!' ? 'is_not' : 'is'
-    if (filter === 'country') filterValue = getCountryName(filterValue)
-    return Object.assign(result, {[filter]: {value: filterValue, type}})
+    const rawFilterValue = query.filters[filter] || ''
+    const type = toFilterType(rawFilterValue)
+    const filterValue = valueWithoutPrefix(rawFilterValue)
+
+    let filterName = filterValue
+
+    if (filter === 'country' && filterValue !== '') {
+      filterName = (new URLSearchParams(window.location.search)).get('country_name')
+    }
+    if (filter === 'region' && filterValue !== '') {
+      filterName = (new URLSearchParams(window.location.search)).get('region_name')
+    }
+    if (filter === 'city' && filterValue !== '') {
+      filterName = (new URLSearchParams(window.location.search)).get('city_name')
+    }
+    return Object.assign(result, {[filter]: {name: filterName, value: filterValue, type}})
   }, {})
+}
+
+const FILTER_TYPES = {
+  isNot: 'is not',
+  contains: 'contains',
+  is: 'is'
+};
+
+const FILTER_PREFIXES = {
+  [FILTER_TYPES.isNot]: '!',
+  [FILTER_TYPES.contains]: '~',
+  [FILTER_TYPES.is]: ''
+};
+
+export function toFilterType(value) {
+  return Object.keys(FILTER_PREFIXES)
+    .find(type => FILTER_PREFIXES[type] === value[0]) || FILTER_TYPES.is;
+}
+
+export function valueWithoutPrefix(value) {
+  return [FILTER_TYPES.isNot, FILTER_TYPES.contains].includes(toFilterType(value))
+    ? value.substring(1)
+    : value;
+}
+
+function toFilterQuery(value, type) {
+  const prefix = FILTER_PREFIXES[type];
+  return prefix + value.trim();
+}
+
+function supportsContains(filterName) {
+  return ['page', 'entry_page', 'exit_page'].includes(filterName)
+}
+
+function supportsIsNot(filterName) {
+  return !['goal', 'prop_key'].includes(filterName)
 }
 
 function withIndefiniteArticle(word) {
@@ -52,9 +107,13 @@ function withIndefiniteArticle(word) {
 export function formatFilterGroup(filterGroup) {
   if (filterGroup === 'utm') {
     return 'UTM tags'
-  }
+  } else if (filterGroup === 'location') {
+    return 'Location'
+  } else if (filterGroup === 'props') {
+    return 'Property'
+  } else {
     return formattedFilters[filterGroup]
-
+  }
 }
 
 export function filterGroupForFilter(filter) {
@@ -102,27 +161,45 @@ class FilterModal extends React.Component {
   handleSubmit() {
     const { formState } = this.state;
 
-    const filters = Object.entries(formState).reduce((res, [filterKey, {type, value}]) => {
-      let finalFilterValue = value
-      if (filterKey === 'country') {
-        const allCountries = Datamap.prototype.worldTopo.objects.world.geometries;
-        const selectedCountry = allCountries.find((c) => c.properties.name === value) || { id: value };
-        finalFilterValue = selectedCountry.id
+    const filters = Object.entries(formState).reduce((res, [filterKey, {type, value, name}]) => {
+      if (filterKey === 'country') { res.push({filter: 'country_name', value: name}) }
+      if (filterKey === 'region') { res.push({filter: 'region_name', value: name}) }
+      if (filterKey === 'city') { res.push({filter: 'city_name', value: name}) }
+      if (filterKey === 'prop_value') {return res}
+      if (filterKey === 'prop_key') {
+        let propValue = formState['prop_value']
+        let filterValue = JSON.stringify({ [value]: toFilterQuery(propValue.value, propValue.type) })
+        res.push({filter: 'props', value: filterValue})
+        return res
       }
 
-      finalFilterValue = (type === 'is_not' ? '!' : '') + finalFilterValue.trim()
-
-      res.push({filter: filterKey, value: finalFilterValue})
+      res.push({filter: filterKey, value: toFilterQuery(value, type)})
       return res
     }, [])
 
     this.selectFiltersAndCloseModal(filters)
   }
 
-  onInput(filterName) {
-    return (val) => {
+  onSelect(filterName) {
+    if (this.state.selectedFilterGroup !== 'location') {
+      return () => {}
+    }
+
+    return (value) => {
       this.setState(prevState => ({formState: Object.assign(prevState.formState, {
-        [filterName]: Object.assign(prevState.formState[filterName], {value: val})
+        [filterName]: Object.assign(prevState.formState[filterName], {value: value.code, name: value.name})
+      })}))
+    }
+  }
+
+  onInput(filterName) {
+    if (this.state.selectedFilterGroup === 'location') {
+      return () => {}
+    }
+
+    return (value) => {
+      this.setState(prevState => ({formState: Object.assign(prevState.formState, {
+        [filterName]: Object.assign(prevState.formState[filterName], {value})
       })}))
     }
   }
@@ -137,19 +214,22 @@ class FilterModal extends React.Component {
     return (input) => {
       const {query, formState} = this.state
       const formFilters = Object.fromEntries(
-        Object.entries(formState).map(([k, v]) => [k, v.value])
+        Object.entries(formState).map(([k, v]) => [k, v.code || v.value])
       )
-      const updatedQuery = {...query, filters: { ...query.filters, ...formFilters, [filter]: null }}
+      const updatedQuery = this.queryForSuggestions(query, formFilters, filter)
+      return api.get(apiPath(this.props.site, `/suggestions/${filter}`), updatedQuery, { q: input.trim() })
+    }
+  }
 
-      if (filter === 'country') {
-        const matchedCountries = Datamap.prototype.worldTopo.objects.world.geometries.filter(c => c.properties.name.toLowerCase().includes(input.trim().toLowerCase()))
-        const matches = matchedCountries.map(c => c.id)
-
-        return api.get(apiPath(this.props.site, '/suggestions/country'), updatedQuery, { q: matches })
-          .then((res) => res.map(code => matchedCountries.filter(c => c.id === code)[0].properties.name))
-      }
-        return api.get(apiPath(this.props.site, `/suggestions/${filter}`), updatedQuery, { q: input.trim() })
-
+  queryForSuggestions(query, formFilters, filter) {
+    if (filter === 'prop_key') {
+      const propsFilter = formFilters.prop_value ? {'': formFilters.prop_value} : null
+      return {...query, filters: { ...query.filters, props: propsFilter}}
+    } else if (filter === 'prop_value') {
+      const propsFilter = formFilters.prop_key ? {[formFilters.prop_key]: '!(none)'} : null
+      return {...query, filters: { ...query.filters, props: propsFilter}}
+    } else {
+      return {...query, filters: { ...query.filters, ...formFilters, [filter]: null }}
     }
   }
 
@@ -172,27 +252,30 @@ class FilterModal extends React.Component {
       }
     })
 
-    this.props.history.replace({pathname: sitePath(this.props.site), search: queryString.toString()})
+    this.props.history.replace({pathname: siteBasePath(this.props.site), search: queryString.toString()})
   }
 
   renderFilterInputs() {
-    return FILTER_GROUPS[this.state.selectedFilterGroup].map((filter) => (
-      <div className="mt-4" key={filter}>
-        <div className="text-sm font-medium text-gray-700 dark:text-gray-300">{ formattedFilters[filter] }</div>
-        <div className="flex items-start mt-1">
-          { this.renderFilterTypeSelector(filter) }
+    const groups = FILTER_GROUPS[this.state.selectedFilterGroup]
 
-          <SearchSelect
-            key={filter}
-            fetchOptions={this.fetchOptions(filter)}
-            initialSelectedItem={this.state.formState[filter].value}
-            onInput={this.onInput(filter)}
-            placeholder={`Select ${withIndefiniteArticle(formattedFilters[filter])}`}
-          />
+    return groups.map((filter) => {
+      return (
+        <div className="mt-4" key={filter}>
+          <div className="text-sm font-medium text-gray-700 dark:text-gray-300">{ formattedFilters[filter] }</div>
+          <div className="flex items-start mt-1">
+            { this.renderFilterTypeSelector(filter) }
+            <SearchSelect
+              key={filter}
+              fetchOptions={this.fetchOptions(filter)}
+              initialSelectedItem={this.state.formState[filter]}
+              onInput={this.onInput(filter)}
+              onSelect={this.onSelect(filter)}
+              placeholder={`Select ${withIndefiniteArticle(formattedFilters[filter])}`}
+            />
+          </div>
         </div>
-
-      </div>
-      ))
+      )
+    })
   }
 
   renderFilterTypeSelector(filterName) {
@@ -222,34 +305,9 @@ class FilterModal extends React.Component {
                 className="z-10 origin-top-left absolute left-0 mt-2 w-24 rounded-md shadow-lg bg-white dark:bg-gray-800 ring-1 ring-black ring-opacity-5 focus:outline-none"
               >
                 <div className="py-1">
-                  <Menu.Item>
-                    {({ active }) => (
-                      <span
-                        onClick={() => this.setFilterType(filterName, 'is')}
-                        className={classNames(
-                          active ? 'bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100' : 'text-gray-700 dark:text-gray-200',
-                          'cursor-pointer block px-4 py-2 text-sm'
-                        )}
-                      >
-                        is
-                      </span>
-                    )}
-                  </Menu.Item>
-                  { filterName !== 'goal' && (
-                    <Menu.Item>
-                      {({ active }) => (
-                        <span
-                          onClick={() => this.setFilterType(filterName, 'is_not')}
-                          className={classNames(
-                            active ? 'bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100' : 'text-gray-700 dark:text-gray-200',
-                            'cursor-pointer block px-4 py-2 text-sm'
-                          )}
-                        >
-                          is not
-                        </span>
-                      )}
-                    </Menu.Item>
-                  )}
+                  { this.renderTypeItem(filterName, FILTER_TYPES.is, true) }
+                  { this.renderTypeItem(filterName, FILTER_TYPES.isNot, supportsIsNot(filterName)) }
+                  { this.renderTypeItem(filterName, FILTER_TYPES.contains, supportsContains(filterName)) }
                 </div>
               </Menu.Items>
             </Transition>
@@ -257,6 +315,26 @@ class FilterModal extends React.Component {
         )}
       </Menu>
     )
+  }
+
+  renderTypeItem(filterName, type, shouldDisplay) {
+    return (
+      shouldDisplay && (
+        <Menu.Item>
+          {({ active }) => (
+            <span
+              onClick={() => this.setFilterType(filterName, type)}
+              className={classNames(
+                active ? "bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100" : "text-gray-700 dark:text-gray-200",
+                "cursor-pointer block px-4 py-2 text-sm"
+              )}
+            >
+              { type }
+            </span>
+          )}
+        </Menu.Item>
+      )
+    );
   }
 
   renderBody() {
@@ -305,7 +383,7 @@ class FilterModal extends React.Component {
   renderHints() {
     if (['page', 'entry_page', 'exit_page'].includes(this.state.selectedFilterGroup)) {
       return (
-        <p className="mt-6 text-xs text-gray-500">Hint: You can use double asterisks to match any character e.g. /blog**</p>
+        <p className="mt-6 text-xs text-gray-500">Hint: You can use double asterisks to match any character e.g. /blog** to group all of your blog posts. Or use double asterisks in front and back (e.g. **keyword**) to group all URLs containing a specific keyword.</p>
       )
     }
 

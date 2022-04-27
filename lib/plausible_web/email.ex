@@ -119,7 +119,7 @@ defmodule PlausibleWeb.Email do
     base_email()
     |> to(user)
     |> tag("over-limit")
-    |> subject("You have outgrown your Plausible subscription tier")
+    |> subject("[Action required] You have outgrown your Plausible subscription tier")
     |> render("over_limit.html", %{
       user: user,
       usage: usage,
@@ -128,7 +128,7 @@ defmodule PlausibleWeb.Email do
     })
   end
 
-  def enterprise_over_limit_email(user, usage, last_cycle) do
+  def enterprise_over_limit_email(user, usage, last_cycle, site_usage, site_allowance) do
     base_email()
     |> to("enterprise@plausible.io")
     |> tag("enterprise-over-limit")
@@ -136,7 +136,22 @@ defmodule PlausibleWeb.Email do
     |> render("enterprise_over_limit.html", %{
       user: user,
       usage: usage,
-      last_cycle: last_cycle
+      last_cycle: last_cycle,
+      site_usage: site_usage,
+      site_allowance: site_allowance
+    })
+  end
+
+  def dashboard_locked(user, usage, last_cycle, suggested_plan) do
+    base_email()
+    |> to(user)
+    |> tag("dashboard-locked")
+    |> subject("[Action required] Your Plausible dashboard is now locked")
+    |> render("dashboard_locked.html", %{
+      user: user,
+      usage: usage,
+      last_cycle: last_cycle,
+      suggested_plan: suggested_plan
     })
   end
 
@@ -263,6 +278,31 @@ defmodule PlausibleWeb.Email do
     |> render("site_member_removed.html",
       membership: membership
     )
+  end
+
+  def import_success(user, site) do
+    base_email()
+    |> to(user)
+    |> tag("import-success-email")
+    |> subject("Google Analytics data imported for #{site.domain}")
+    |> render("google_analytics_import.html", %{
+      site: site,
+      link: PlausibleWeb.Endpoint.url() <> "/" <> URI.encode_www_form(site.domain),
+      user: user,
+      success: true
+    })
+  end
+
+  def import_failure(user, site) do
+    base_email()
+    |> to(user)
+    |> tag("import-failure-email")
+    |> subject("Google Analytics import failed for #{site.domain}")
+    |> render("google_analytics_import.html", %{
+      user: user,
+      site: site,
+      success: false
+    })
   end
 
   defp base_email() do

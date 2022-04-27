@@ -2,13 +2,13 @@ name: Build
 
 on:
   push:
-    branches: [ master, stable ]
+    branches: [ master, stable, dev ]
 
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: buildjet-4vcpu-ubuntu-2004
 
     steps:
       - uses: actions/checkout@v2

@@ -35,7 +35,8 @@ defmodule PlausibleWeb.Site.MembershipController do
       render(conn, "invite_member_form.html",
         error: msg,
         site: site,
-        layout: {PlausibleWeb.LayoutView, "focus.html"}
+        layout: {PlausibleWeb.LayoutView, "focus.html"},
+        skip_plausible_tracking: true
       )
     else
       invitation =
@@ -73,7 +74,8 @@ defmodule PlausibleWeb.Site.MembershipController do
       conn,
       "transfer_ownership_form.html",
       site: site,
-      layout: {PlausibleWeb.LayoutView, "focus.html"}
+      layout: {PlausibleWeb.LayoutView, "focus.html"},
+      skip_plausible_tracking: true
     )
   end
 
@@ -92,7 +94,7 @@ defmodule PlausibleWeb.Site.MembershipController do
       |> Repo.preload([:site, :inviter])
 
     PlausibleWeb.Email.ownership_transfer_request(invitation, user)
-    |> Plausible.Mailer.send_email()
+    |> Plausible.Mailer.send_email_safe()
 
     conn
     |> put_flash(:success, "Site transfer request has been sent to #{email}")

@@ -1,9 +1,9 @@
 import React from 'react'
 import { Link, withRouter } from 'react-router-dom'
-import {formatDay, formatMonthYYYY, nowForSite, parseUTCDate} from './date'
-import * as storage from './storage'
+import {formatDay, formatMonthYYYY, nowForSite, parseUTCDate} from './util/date'
+import * as storage from './util/storage'
 
-const PERIODS = ['realtime', 'day', 'month', '7d', '30d', '6mo', '12mo', 'custom']
+const PERIODS = ['realtime', 'day', 'month', '7d', '30d', '6mo', '12mo', 'year', 'all', 'custom']
 
 export function parseQuery(querystring, site) {
   const q = new URLSearchParams(querystring)
@@ -23,6 +23,7 @@ export function parseQuery(querystring, site) {
     date: q.get('date') ? parseUTCDate(q.get('date')) : nowForSite(site),
     from: q.get('from') ? parseUTCDate(q.get('from')) : undefined,
     to: q.get('to') ? parseUTCDate(q.get('to')) : undefined,
+    with_imported: q.get('with_imported') ? q.get('with_imported') === 'true' : true,
     filters: {
       'goal': q.get('goal'),
       'props': JSON.parse(q.get('props')),
@@ -30,6 +31,8 @@ export function parseQuery(querystring, site) {
       'utm_medium': q.get('utm_medium'),
       'utm_source': q.get('utm_source'),
       'utm_campaign': q.get('utm_campaign'),
+      'utm_content': q.get('utm_content'),
+      'utm_term': q.get('utm_term'),
       'referrer': q.get('referrer'),
       'screen': q.get('screen'),
       'browser': q.get('browser'),
@@ -37,6 +40,8 @@ export function parseQuery(querystring, site) {
       'os': q.get('os'),
       'os_version': q.get('os_version'),
       'country': q.get('country'),
+      'region': q.get('region'),
+      'city': q.get('city'),
       'page': q.get('page'),
       'entry_page': q.get('entry_page'),
       'exit_page': q.get('exit_page')
@@ -102,26 +107,24 @@ class QueryLink extends React.Component {
 const QueryLinkWithRouter = withRouter(QueryLink)
 export { QueryLinkWithRouter as QueryLink };
 
-class QueryButton extends React.Component {
-  render() {
-    const { history, query, to, disabled, className, children } = this.props
-    return (
-      <button
-        className={className}
-        onClick={(event) => {
-          event.preventDefault()
-          navigateToQuery(history, query, to)
-          if (this.props.onClick) this.props.onClick(event)
-          history.push({ pathname: window.location.pathname, search: generateQueryString(to) })
-        }}
-        type="button"
-        disabled={disabled}
-      >
-        {children}
-      </button>
-    )
-  }
+function QueryButton({history, query, to, disabled, className, children, onClick}) {
+  return (
+    <button
+      className={className}
+      onClick={(event) => {
+        event.preventDefault()
+        navigateToQuery(history, query, to)
+        if (onClick) onClick(event)
+        history.push({ pathname: window.location.pathname, search: generateQueryString(to) })
+      }}
+      type="button"
+      disabled={disabled}
+    >
+      {children}
+    </button>
+  )
 }
+
 const QueryButtonWithRouter = withRouter(QueryButton)
 export { QueryButtonWithRouter as QueryButton };
 
@@ -139,6 +142,7 @@ export function toHuman(query) {
   } if (query.period === '12mo') {
     return 'in the last 12 months'
   }
+  return ''
 }
 
 export function eventName(query) {
@@ -153,11 +157,15 @@ export function eventName(query) {
 
 export const formattedFilters = {
   'goal': 'Goal',
-  'props': 'Goal properties',
+  'props': 'Property',
+  'prop_key': 'Property',
+  'prop_value': 'Value',
   'source': 'Source',
   'utm_medium': 'UTM Medium',
   'utm_source': 'UTM Source',
   'utm_campaign': 'UTM Campaign',
+  'utm_content': 'UTM Content',
+  'utm_term': 'UTM Term',
   'referrer': 'Referrer URL',
   'screen': 'Screen size',
   'browser': 'Browser',
@@ -165,6 +173,8 @@ export const formattedFilters = {
   'os': 'Operating System',
   'os_version': 'Operating System Version',
   'country': 'Country',
+  'region': 'Region',
+  'city': 'City',
   'page': 'Page',
   'entry_page': 'Entry Page',
   'exit_page': 'Exit Page'

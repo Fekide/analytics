@@ -5,9 +5,9 @@ import FlipMove from 'react-flip-move';
 import FadeIn from '../../fade-in'
 import Bar from '../bar'
 import MoreLink from '../more-link'
-import numberFormatter from '../../number-formatter'
+import numberFormatter from '../../util/number-formatter'
 import * as api from '../../api'
-import LazyLoader from '../../lazy-loader'
+import LazyLoader from '../../components/lazy-loader'
 
 function LinkOption(props) {
   if (props.disabled) {
@@ -78,7 +78,7 @@ export default class Referrers extends React.Component {
     return (
       <div className="flex items-center justify-between my-1 text-sm" key={referrer.name}>
         <Bar
-          count={referrer.count}
+          count={referrer.visitors}
           all={this.state.referrers}
           bg="bg-blue-50 dark:bg-gray-500 dark:bg-opacity-15"
           maxWidthDeduction={maxWidthDeduction}
@@ -99,7 +99,7 @@ export default class Referrers extends React.Component {
             { this.renderExternalLink(referrer) }
           </span>
         </Bar>
-        <span className="font-medium dark:text-gray-200">{numberFormatter(referrer.count)}</span>
+        <span className="font-medium dark:text-gray-200">{numberFormatter(referrer.visitors)}</span>
         {this.showConversionRate() && <span className="font-medium dark:text-gray-200 w-20 text-right">{referrer.conversion_rate}%</span>}
       </div>
     )

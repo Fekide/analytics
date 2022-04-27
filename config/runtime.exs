@@ -7,6 +7,20 @@ end
 
 config_dir = System.get_env("CONFIG_DIR", "/run/secrets")
 
+# Listen IP supports IPv4 and IPv6 addresses.
+listen_ip =
+  (
+    str = get_var_from_path_or_env(config_dir, "LISTEN_IP") || "127.0.0.1"
+
+    case :inet.parse_address(String.to_charlist(str)) do
+      {:ok, ip_addr} ->
+        ip_addr
+
+      {:error, reason} ->
+        raise "Invalid LISTEN_IP '#{str}' error: #{inspect(reason)}"
+    end
+  )
+
 # System.get_env does not accept a non string default
 port = get_var_from_path_or_env(config_dir, "PORT") || 8000
 
@@ -28,8 +42,8 @@ case secret_key_base do
   nil ->
     raise "SECRET_KEY_BASE configuration option is required. See https://plausible.io/docs/self-hosting-configuration#server"
 
-  key when byte_size(key) < 64 ->
-    raise "SECRET_KEY_BASE must be at least 64 bytes long. See https://plausible.io/docs/self-hosting-configuration#server"
+  key when byte_size(key) < 32 ->
+    raise "SECRET_KEY_BASE must be at least 32 bytes long. See https://plausible.io/docs/self-hosting-configuration#server"
 
   _ ->
     nil
@@ -47,7 +61,7 @@ db_socket_dir = get_var_from_path_or_env(config_dir, "DATABASE_SOCKET_DIR")
 admin_user = get_var_from_path_or_env(config_dir, "ADMIN_USER_NAME")
 admin_email = get_var_from_path_or_env(config_dir, "ADMIN_USER_EMAIL")
 
-admin_user_ids =
+super_admin_user_ids =
   get_var_from_path_or_env(config_dir, "ADMIN_USER_IDS", "")
   |> String.split(",")
   |> Enum.map(fn id -> Integer.parse(id) end)
@@ -83,14 +97,13 @@ ch_db_url =
 ### Mandatory params End
 
 sentry_dsn = get_var_from_path_or_env(config_dir, "SENTRY_DSN")
+honeycomb_api_key = get_var_from_path_or_env(config_dir, "HONEYCOMB_API_KEY")
+honeycomb_dataset = get_var_from_path_or_env(config_dir, "HONEYCOMB_DATASET")
 paddle_auth_code = get_var_from_path_or_env(config_dir, "PADDLE_VENDOR_AUTH_CODE")
+paddle_vendor_id = get_var_from_path_or_env(config_dir, "PADDLE_VENDOR_ID")
 google_cid = get_var_from_path_or_env(config_dir, "GOOGLE_CLIENT_ID")
 google_secret = get_var_from_path_or_env(config_dir, "GOOGLE_CLIENT_SECRET")
 slack_hook_url = get_var_from_path_or_env(config_dir, "SLACK_WEBHOOK")
-twitter_consumer_key = get_var_from_path_or_env(config_dir, "TWITTER_CONSUMER_KEY")
-twitter_consumer_secret = get_var_from_path_or_env(config_dir, "TWITTER_CONSUMER_SECRET")
-twitter_token = get_var_from_path_or_env(config_dir, "TWITTER_ACCESS_TOKEN")
-twitter_token_secret = get_var_from_path_or_env(config_dir, "TWITTER_ACCESS_TOKEN_SECRET")
 postmark_api_key = get_var_from_path_or_env(config_dir, "POSTMARK_API_KEY")
 
 cron_enabled =
@@ -98,18 +111,15 @@ cron_enabled =
   |> get_var_from_path_or_env("CRON_ENABLED", "false")
   |> String.to_existing_atom()
 
-custom_domain_server_ip = get_var_from_path_or_env(config_dir, "CUSTOM_DOMAIN_SERVER_IP")
-custom_domain_server_user = get_var_from_path_or_env(config_dir, "CUSTOM_DOMAIN_SERVER_USER")
-
-custom_domain_server_password =
-  get_var_from_path_or_env(config_dir, "CUSTOM_DOMAIN_SERVER_PASSWORD")
-
 geolite2_country_db =
   get_var_from_path_or_env(
     config_dir,
     "GEOLITE2_COUNTRY_DB",
     Application.app_dir(:plausible) <> "/priv/geodb/dbip-country.mmdb"
   )
+
+ip_geolocation_db = get_var_from_path_or_env(config_dir, "IP_GEOLOCATION_DB", geolite2_country_db)
+geonames_source_file = get_var_from_path_or_env(config_dir, "GEONAMES_SOURCE_FILE")
 
 disable_auth =
   config_dir
@@ -190,7 +200,7 @@ config :plausible,
   admin_pwd: admin_pwd,
   environment: env,
   mailer_email: mailer_email,
-  admin_user_ids: admin_user_ids,
+  super_admin_user_ids: super_admin_user_ids,
   site_limit: site_limit,
   site_limit_exempt: site_limit_exempt,
   is_selfhost: is_selfhost,
@@ -219,16 +229,26 @@ config :plausible, :selfhost,
 
 config :plausible, PlausibleWeb.Endpoint,
   url: [scheme: base_url.scheme, host: base_url.host, path: base_url.path, port: base_url.port],
-  http: [port: port, transport_options: [max_connections: :infinity]],
+  http: [port: port, ip: listen_ip, transport_options: [max_connections: :infinity]],
   secret_key_base: secret_key_base
 
+maybe_ipv6 = if System.get_env("ECTO_IPV6"), do: [:inet6], else: []
+
 if is_nil(db_socket_dir) do
-  config :plausible, Plausible.Repo, url: db_url
+  config :plausible, Plausible.Repo,
+    url: db_url,
+    socket_options: maybe_ipv6
 else
   config :plausible, Plausible.Repo,
     socket_dir: db_socket_dir,
     database: get_var_from_path_or_env(config_dir, "DATABASE_NAME", "plausible")
 end
+
+config :fun_with_flags, :cache_bust_notifications, enabled: false
+
+config :fun_with_flags, :persistence,
+  adapter: FunWithFlags.Store.Persistent.Ecto,
+  repo: Plausible.Repo
 
 config :sentry,
   dsn: sentry_dsn,
@@ -239,7 +259,9 @@ config :sentry,
   enable_source_code_context: true,
   root_source_code_path: [File.cwd!()]
 
-config :plausible, :paddle, vendor_auth_code: paddle_auth_code
+config :plausible, :paddle,
+  vendor_auth_code: paddle_auth_code,
+  vendor_id: paddle_vendor_id
 
 config :plausible, :google,
   client_id: google_cid,
@@ -286,87 +308,83 @@ case mailer_adapter do
     raise "Unknown mailer_adapter; expected SMTPAdapter or PostmarkAdapter"
 end
 
-config :plausible, :twitter,
-  consumer_key: twitter_consumer_key,
-  consumer_secret: twitter_consumer_secret,
-  token: twitter_token,
-  token_secret: twitter_token_secret
-
-config :plausible, :custom_domain_server,
-  user: custom_domain_server_user,
-  password: custom_domain_server_password,
-  ip: custom_domain_server_ip
-
 config :plausible, PlausibleWeb.Firewall,
   blocklist:
     get_var_from_path_or_env(config_dir, "IP_BLOCKLIST", "")
     |> String.split(",")
     |> Enum.map(&String.trim/1)
 
-if config_env() == :prod && !disable_cron do
-  base_cron = [
-    # Daily at midnight
-    {"0 0 * * *", Plausible.Workers.RotateSalts},
-    #  hourly
-    {"0 * * * *", Plausible.Workers.ScheduleEmailReports},
-    # hourly
-    {"0 * * * *", Plausible.Workers.SendSiteSetupEmails},
-    # Daily at midnight
-    {"0 0 * * *", Plausible.Workers.FetchTweets},
-    # Daily at midday
-    {"0 12 * * *", Plausible.Workers.SendCheckStatsEmails},
-    # Every 15 minutes
-    {"*/15 * * * *", Plausible.Workers.SpikeNotifier},
-    # Every day at midnight
-    {"0 0 * * *", Plausible.Workers.CleanEmailVerificationCodes},
-    # Every day at 1am
-    {"0 1 * * *", Plausible.Workers.CleanInvitations}
-  ]
+base_cron = [
+  # Daily at midnight
+  {"0 0 * * *", Plausible.Workers.RotateSalts},
+  #  hourly
+  {"0 * * * *", Plausible.Workers.ScheduleEmailReports},
+  # hourly
+  {"0 * * * *", Plausible.Workers.SendSiteSetupEmails},
+  # Daily at midday
+  {"0 12 * * *", Plausible.Workers.SendCheckStatsEmails},
+  # Every 15 minutes
+  {"*/15 * * * *", Plausible.Workers.SpikeNotifier},
+  # Every day at midnight
+  {"0 0 * * *", Plausible.Workers.CleanEmailVerificationCodes},
+  # Every day at 1am
+  {"0 1 * * *", Plausible.Workers.CleanInvitations}
+]
 
-  extra_cron = [
-    # Daily at midday
-    {"0 12 * * *", Plausible.Workers.SendTrialNotifications},
-    # Daily at 14
-    {"0 14 * * *", Plausible.Workers.CheckUsage},
-    # Daily at 15
-    {"0 15 * * *", Plausible.Workers.NotifyAnnualRenewal},
-    # Every 10 minutes
-    {"*/10 * * * *", Plausible.Workers.ProvisionSslCertificates},
-    # Every midnight
-    {"0 0 * * *", Plausible.Workers.LockSites}
-  ]
+cloud_cron = [
+  # Daily at midday
+  {"0 12 * * *", Plausible.Workers.SendTrialNotifications},
+  # Daily at 14
+  {"0 14 * * *", Plausible.Workers.CheckUsage},
+  # Daily at 15
+  {"0 15 * * *", Plausible.Workers.NotifyAnnualRenewal},
+  # Every midnight
+  {"0 0 * * *", Plausible.Workers.LockSites}
+]
 
-  base_queues = [
-    rotate_salts: 1,
-    schedule_email_reports: 1,
-    send_email_reports: 1,
-    spike_notifications: 1,
-    fetch_tweets: 1,
-    check_stats_emails: 1,
-    site_setup_emails: 1,
-    clean_email_verification_codes: 1,
-    clean_invitations: 1
-  ]
+crontab = if(is_selfhost, do: base_cron, else: base_cron ++ cloud_cron)
 
-  extra_queues = [
-    provision_ssl_certificates: 1,
-    trial_notification_emails: 1,
-    check_usage: 1,
-    notify_annual_renewal: 1,
-    lock_sites: 1
-  ]
+base_queues = [
+  rotate_salts: 1,
+  schedule_email_reports: 1,
+  send_email_reports: 1,
+  spike_notifications: 1,
+  check_stats_emails: 1,
+  site_setup_emails: 1,
+  clean_email_verification_codes: 1,
+  clean_invitations: 1,
+  google_analytics_imports: 1
+]
 
-  # Keep 30 days history
-  config :plausible, Oban,
-    repo: Plausible.Repo,
-    plugins: [{Oban.Plugins.Pruner, max_age: 2_592_000}],
-    queues: if(is_selfhost, do: base_queues, else: base_queues ++ extra_queues),
-    crontab: if(is_selfhost, do: base_cron, else: base_cron ++ extra_cron)
-else
-  config :plausible, Oban,
-    repo: Plausible.Repo,
-    queues: false,
-    plugins: false
+cloud_queues = [
+  trial_notification_emails: 1,
+  check_usage: 1,
+  notify_annual_renewal: 1,
+  lock_sites: 1
+]
+
+queues = if(is_selfhost, do: base_queues, else: base_queues ++ cloud_queues)
+cron_enabled = !disable_cron
+
+cond do
+  config_env() == :prod ->
+    config :plausible, Oban,
+      repo: Plausible.Repo,
+      plugins: [
+        # Keep 30 days history
+        {Oban.Plugins.Pruner, max_age: :timer.hours(24 * 30)},
+        {Oban.Plugins.Cron, crontab: if(cron_enabled, do: crontab, else: [])},
+        # Rescue orphaned jobs after 2 hours
+        {Oban.Plugins.Lifeline, rescue_after: :timer.minutes(120)},
+        {Oban.Plugins.Stager, interval: :timer.seconds(5)}
+      ],
+      queues: if(cron_enabled, do: queues, else: [])
+
+  true ->
+    config :plausible, Oban,
+      repo: Plausible.Repo,
+      queues: queues,
+      plugins: false
 end
 
 config :plausible, :hcaptcha,
@@ -413,16 +431,20 @@ config :kaffy,
     ]
   ]
 
-if config_env() != :test && geolite2_country_db do
+if config_env() != :test do
   config :geolix,
     databases: [
       %{
-        id: :country,
+        id: :geolocation,
         adapter: Geolix.Adapter.MMDB2,
-        source: geolite2_country_db,
+        source: ip_geolocation_db,
         result_as: :raw
       }
     ]
+end
+
+if geonames_source_file do
+  config :location, :geonames_source_file, geonames_source_file
 end
 
 config :logger,
@@ -433,6 +455,21 @@ config :logger, Sentry.LoggerBackend,
   capture_log_messages: true,
   level: :error,
   excluded_domains: []
+
+# if honeycomb_api_key && honeycomb_dataset do
+#   config :opentelemetry, :processors,
+#     otel_batch_processor: %{
+#       exporter:
+#         {:opentelemetry_exporter,
+#          %{
+#            endpoints: ['https://api.honeycomb.io:443'],
+#            headers: [
+#              {"x-honeycomb-team", honeycomb_api_key},
+#              {"x-honeycomb-dataset", honeycomb_dataset}
+#            ]
+#          }}
+#     }
+# end
 
 config :tzdata,
        :data_dir,

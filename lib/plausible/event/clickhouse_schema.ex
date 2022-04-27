@@ -17,8 +17,14 @@ defmodule Plausible.ClickhouseEvent do
     field :utm_medium, :string, default: ""
     field :utm_source, :string, default: ""
     field :utm_campaign, :string, default: ""
+    field :utm_content, :string, default: ""
+    field :utm_term, :string, default: ""
 
     field :country_code, :string, default: ""
+    field :subdivision1_code, :string, default: ""
+    field :subdivision2_code, :string, default: ""
+    field :city_geoname_id, :integer, default: 0
+
     field :screen_size, :string, default: ""
     field :operating_system, :string, default: ""
     field :operating_system_version, :string, default: ""
@@ -27,6 +33,7 @@ defmodule Plausible.ClickhouseEvent do
 
     field :"meta.key", {:array, :string}, default: []
     field :"meta.value", {:array, :string}, default: []
+    field :transferred_from, :string, default: ""
   end
 
   def new(attrs) do
@@ -49,7 +56,12 @@ defmodule Plausible.ClickhouseEvent do
         :utm_medium,
         :utm_source,
         :utm_campaign,
+        :utm_content,
+        :utm_term,
         :country_code,
+        :subdivision1_code,
+        :subdivision2_code,
+        :city_geoname_id,
         :screen_size,
         :"meta.key",
         :"meta.value"

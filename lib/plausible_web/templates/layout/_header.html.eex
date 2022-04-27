@@ -26,11 +26,9 @@
                   <%= link(trial_notificaton(@conn.assigns[:current_user]), to: "/settings", class: "font-bold text-sm text-yellow-900 dark:text-yellow-900 rounded p-2 bg-yellow-100 dark:bg-yellow-100", style: "line-height: 40px;") %>
                 </li>
               <% end %>
-              <%= if !Application.get_env(:plausible, :is_selfhost) do %>
-                <li class="hidden mr-6 sm:block">
-                  <%= link("Docs", to: "https://docs.plausible.io", class: "font-bold rounded m-1 p-1 hover:bg-gray-200 dark:hover:bg-gray-900 dark:text-gray-100", style: "line-height: 40px;", target: "_blank") %>
-                </li>
-              <% end %>
+              <li class="hidden mr-6 sm:block">
+                <%= link("Docs", to: "https://plausible.io/docs", class: "font-bold rounded m-1 p-1 hover:bg-gray-200 dark:hover:bg-gray-900 dark:text-gray-100", style: "line-height: 40px;", target: "_blank", rel: "noreferrer") %>
+              </li>
               <li class="w-full sm:w-auto">
                 <div class="relative font-bold rounded">
                   <div data-dropdown-trigger class="flex items-center justify-end p-1 m-1 rounded cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-900 dark:text-gray-100">
@@ -40,7 +38,7 @@
 
                   <div data-dropdown style="top: 42px; right: 0px; width: 185px;" class="absolute right-0 hidden bg-white border border-gray-300 rounded shadow-md dropdown-content dark:bg-gray-800 dark:border-gray-500">
                     <%= link("Settings", to: "/settings", class: "block py-2 px-2 border-b border-gray-300 dark:border-gray-500 hover:bg-gray-100 dark:hover:bg-gray-900 dark:text-gray-100") %>
-                    <%= if is_admin(@conn) do %>
+                    <%= if @conn.assigns[:is_super_admin] do %>
                       <%= link("Administration", to: "/admin", class: "block py-2 px-2 border-b border-gray-300 hover:bg-gray-100 dark:hover:bg-gray-900 dark:text-gray-100") %>
                     <% end %>
                     <%= link("Log out", to: "/logout", class: "block py-2 px-2 hover:bg-gray-100 dark:hover:bg-gray-900 dark:text-gray-100") %>

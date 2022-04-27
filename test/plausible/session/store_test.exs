@@ -21,12 +21,16 @@ defmodule Plausible.Session.StoreTest do
         utm_medium: "medium",
         utm_source: "source",
         utm_campaign: "campaign",
+        utm_content: "content",
+        utm_term: "term",
         browser: "browser",
         browser_version: "55",
         country_code: "EE",
         screen_size: "Desktop",
         operating_system: "Mac",
-        operating_system_version: "11"
+        operating_system_version: "11",
+        "meta.key": ["logged_in", "darkmode"],
+        "meta.value": ["true", "false"]
       )
 
     Store.on_event(event, nil, store)
@@ -47,6 +51,8 @@ defmodule Plausible.Session.StoreTest do
     assert session.utm_medium == event.utm_medium
     assert session.utm_source == event.utm_source
     assert session.utm_campaign == event.utm_campaign
+    assert session.utm_content == event.utm_content
+    assert session.utm_term == event.utm_term
     assert session.country_code == event.country_code
     assert session.screen_size == event.screen_size
     assert session.operating_system == event.operating_system
@@ -55,6 +61,8 @@ defmodule Plausible.Session.StoreTest do
     assert session.browser_version == event.browser_version
     assert session.timestamp == event.timestamp
     assert session.start === event.timestamp
+    # assert Map.get(session, :"entry.meta.key") == ["logged_in", "darkmode"]
+    # assert Map.get(session, :"entry.meta.value") == ["true", "false"]
   end
 
   test "updates a session", %{store: store} do
@@ -66,7 +74,16 @@ defmodule Plausible.Session.StoreTest do
         domain: event1.domain,
         user_id: event1.user_id,
         name: "pageview",
-        timestamp: timestamp
+        timestamp: timestamp,
+        country_code: "US",
+        subdivision1_code: "SUB1",
+        subdivision2_code: "SUB2",
+        city_geoname_id: 12312,
+        screen_size: "Desktop",
+        operating_system: "Mac",
+        operating_system_version: "11",
+        browser: "Firefox",
+        browser_version: "10"
       )
 
     Store.on_event(event1, nil, store)
@@ -76,6 +93,15 @@ defmodule Plausible.Session.StoreTest do
     assert session.duration == 10
     assert session.pageviews == 2
     assert session.events == 2
+    assert session.country_code == "US"
+    assert session.subdivision1_code == "SUB1"
+    assert session.subdivision2_code == "SUB2"
+    assert session.city_geoname_id == 12312
+    assert session.operating_system == "Mac"
+    assert session.operating_system_version == "11"
+    assert session.browser == "Firefox"
+    assert session.browser_version == "10"
+    assert session.screen_size == "Desktop"
   end
 
   test "calculates duration correctly for out-of-order events", %{store: store} do

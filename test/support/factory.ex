@@ -48,6 +48,8 @@ defmodule Plausible.Factory do
       utm_medium: "",
       utm_source: "",
       utm_campaign: "",
+      utm_content: "",
+      utm_term: "",
       entry_page: "/",
       pageviews: 1,
       events: 1,
@@ -88,6 +90,8 @@ defmodule Plausible.Factory do
       utm_medium: "",
       utm_source: "",
       utm_campaign: "",
+      utm_content: "",
+      utm_term: "",
       browser: "",
       browser_version: "",
       country_code: "",
@@ -112,6 +116,7 @@ defmodule Plausible.Factory do
       status: "active",
       next_bill_amount: "6.00",
       next_bill_date: Timex.today(),
+      last_bill_date: Timex.today(),
       currency_code: "USD"
     }
   end
@@ -121,7 +126,8 @@ defmodule Plausible.Factory do
       paddle_plan_id: sequence(:paddle_plan_id, &"plan-#{&1}"),
       billing_interval: :monthly,
       monthly_pageview_limit: 1_000_000,
-      hourly_api_request_limit: 3000
+      hourly_api_request_limit: 3000,
+      site_limit: 100
     }
   end
 
@@ -137,17 +143,6 @@ defmodule Plausible.Factory do
   def custom_domain_factory do
     %Plausible.Site.CustomDomain{
       domain: sequence(:custom_domain, &"domain-#{&1}.com")
-    }
-  end
-
-  def tweet_factory do
-    %Plausible.Twitter.Tweet{
-      tweet_id: UUID.uuid4(),
-      author_handle: "author-handle",
-      author_name: "author-name",
-      author_image: "pic.twitter.com/author.png",
-      text: "tweet-text",
-      created: Timex.now()
     }
   end
 
@@ -182,6 +177,114 @@ defmodule Plausible.Factory do
       key: key,
       key_hash: Plausible.Auth.ApiKey.do_hash(key),
       key_prefix: binary_part(key, 0, 6)
+    }
+  end
+
+  def imported_visitors_factory do
+    %{
+      table: "imported_visitors",
+      date: Timex.today(),
+      visitors: 1,
+      pageviews: 1,
+      bounces: 0,
+      visits: 1,
+      visit_duration: 10
+    }
+  end
+
+  def imported_sources_factory do
+    %{
+      table: "imported_sources",
+      date: Timex.today(),
+      source: "",
+      visitors: 1,
+      visits: 1,
+      bounces: 0,
+      visit_duration: 10
+    }
+  end
+
+  def imported_pages_factory do
+    %{
+      table: "imported_pages",
+      date: Timex.today(),
+      page: "",
+      visitors: 1,
+      pageviews: 1,
+      exits: 0,
+      time_on_page: 10
+    }
+  end
+
+  def imported_entry_pages_factory do
+    %{
+      table: "imported_entry_pages",
+      date: Timex.today(),
+      entry_page: "",
+      visitors: 1,
+      entrances: 1,
+      bounces: 0,
+      visit_duration: 10
+    }
+  end
+
+  def imported_exit_pages_factory do
+    %{
+      table: "imported_exit_pages",
+      date: Timex.today(),
+      exit_page: "",
+      visitors: 1,
+      exits: 1
+    }
+  end
+
+  def imported_locations_factory do
+    %{
+      table: "imported_locations",
+      date: Timex.today(),
+      country: "",
+      region: "",
+      city: 0,
+      visitors: 1,
+      visits: 1,
+      bounces: 0,
+      visit_duration: 10
+    }
+  end
+
+  def imported_devices_factory do
+    %{
+      table: "imported_devices",
+      date: Timex.today(),
+      device: "",
+      visitors: 1,
+      visits: 1,
+      bounces: 0,
+      visit_duration: 10
+    }
+  end
+
+  def imported_browsers_factory do
+    %{
+      table: "imported_browsers",
+      date: Timex.today(),
+      browser: "",
+      visitors: 1,
+      visits: 1,
+      bounces: 0,
+      visit_duration: 10
+    }
+  end
+
+  def imported_operating_systems_factory do
+    %{
+      table: "imported_operating_systems",
+      date: Timex.today(),
+      operating_system: "",
+      visitors: 1,
+      visits: 1,
+      bounces: 0,
+      visit_duration: 10
     }
   end
 

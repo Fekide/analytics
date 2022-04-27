@@ -1,18 +1,26 @@
 import React, { Fragment, useState } from 'react';
 import { Link, withRouter } from 'react-router-dom'
-import { AdjustmentsIcon, PlusIcon, XIcon, PencilIcon } from '@heroicons/react/solid'
+import { AdjustmentsIcon, SearchIcon, XIcon, PencilIcon } from '@heroicons/react/solid'
 import classNames from 'classnames'
-import Datamap from 'datamaps'
 import { Menu, Transition } from '@headlessui/react'
 
 import { appliedFilters, navigateToQuery, formattedFilters } from './query'
-import { FILTER_GROUPS, formatFilterGroup, filterGroupForFilter } from './stats/modals/filter'
+import {
+  FILTER_GROUPS,
+  formatFilterGroup,
+  filterGroupForFilter,
+  toFilterType,
+  valueWithoutPrefix
+} from "./stats/modals/filter";
 
 function removeFilter(key, history, query) {
   const newOpts = {
     [key]: false
   }
-  if (key === 'goal') { newOpts.props = false }
+  if (key === 'country') { newOpts.country_name = false }
+  if (key === 'region')  { newOpts.region_name = false }
+  if (key === 'city')    { newOpts.city_name = false }
+
   navigateToQuery(
     history,
     query,
@@ -29,16 +37,9 @@ function clearAllFilters(history, query) {
   );
 }
 
-function filterType(val) {
-  if (typeof(val) === 'string' && val.startsWith('!')) {
-    return ['is not', val.substr(1)]
-  }
-
-  return ['is', val]
-}
-
 function filterText(key, rawValue, query) {
-  const [type, value] = filterType(rawValue)
+  let type = toFilterType(rawValue)
+  const value = valueWithoutPrefix(rawValue)
 
   if (key === "goal") {
     return <>Completed goal <b>{value}</b></>
@@ -46,7 +47,7 @@ function filterText(key, rawValue, query) {
   if (key === "props") {
     const [metaKey, metaValue] = Object.entries(value)[0]
     const eventName = query.filters.goal ? query.filters.goal : 'event'
-    return <>{eventName}.{metaKey} is <b>{metaValue}</b></>
+    return <>{eventName}.{metaKey} {toFilterType(metaValue)} <b>{valueWithoutPrefix(metaValue)}</b></>
   }
   if (key === "browser_version") {
     const browserName = query.filters.browser ? query.filters.browser : 'Browser'
@@ -57,9 +58,21 @@ function filterText(key, rawValue, query) {
     return <>{osName}.Version {type} <b>{value}</b></>
   }
   if (key === "country") {
-    const allCountries = Datamap.prototype.worldTopo.objects.world.geometries;
-    const selectedCountry = allCountries.find((c) => c.id === value) || {properties: {name: value}};
-    return <>Country {type} <b>{selectedCountry.properties.name}</b></>
+    const q = new URLSearchParams(window.location.search)
+    const countryName = q.get('country_name')
+    return <>Country {type} <b>{countryName}</b></>
+  }
+
+  if (key === "region") {
+    const q = new URLSearchParams(window.location.search)
+    const regionName = q.get('region_name')
+    return <>Region {type} <b>{regionName}</b></>
+  }
+
+  if (key === "city") {
+    const q = new URLSearchParams(window.location.search)
+    const cityName = q.get('city_name')
+    return <>City {type} <b>{cityName}</b></>
   }
 
   const formattedFilter = formattedFilters[key]
@@ -72,19 +85,6 @@ function filterText(key, rawValue, query) {
 }
 
 function renderDropdownFilter(site, history, [key, value], query) {
-  if (key === 'props') {
-    return (
-      <Menu.Item key={key}>
-        <div className="px-4 sm:py-2 py-3 text-sm leading-tight flex items-center justify-between" key={key + value}>
-          <span className="inline-block w-full truncate">{filterText(key, value, query)}</span>
-          <b title={`Remove filter: ${formattedFilters[key]}`} className="ml-2 cursor-pointer hover:text-indigo-700 dark:hover:text-indigo-500" onClick={() => removeFilter(key, history, query)}>
-            <XIcon className="w-4 h-4" />
-          </b>
-        </div>
-      </Menu.Item>
-    )
-  }
-
   return (
     <Menu.Item key={key}>
       <div className="px-3 md:px-4 sm:py-2 py-3 text-sm leading-tight flex items-center justify-between" key={key + value}>
@@ -127,7 +127,9 @@ function DropdownContent({history, site, query, wrapped}) {
   const [addingFilter, setAddingFilter] = useState(false);
 
   if (wrapped === 0 || addingFilter) {
-    return Object.keys(FILTER_GROUPS).map((option) => filterDropdownOption(site, option))
+    return Object.keys(FILTER_GROUPS)
+      .filter((option) => option === 'props' ? site.flags.custom_dimension_filter : true)
+      .map((option) => filterDropdownOption(site, option))
   }
 
   return (
@@ -235,17 +237,9 @@ class Filters extends React.Component {
   renderListFilter(history, [key, value], query) {
     return (
       <span key={key} title={value} className="flex bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 shadow text-sm rounded mr-2 items-center">
-        {key === 'props' ? (
-          <span className="flex w-full h-full items-center py-2 pl-3">
-            <span className="inline-block max-w-2xs md:max-w-xs truncate">{filterText(key, value, query)}</span>
-          </span>
-        ) : (
-          <>
-            <Link title={`Edit filter: ${formattedFilters[key]}`} className="flex w-full h-full items-center py-2 pl-3" to={{ pathname: `/${encodeURIComponent(this.props.site.domain)}/filter/${filterGroupForFilter(key)}`, search: window.location.search }}>
-              <span className="inline-block max-w-2xs md:max-w-xs truncate">{filterText(key, value, query)}</span>
-            </Link>
-          </>
-        )}
+        <Link title={`Edit filter: ${formattedFilters[key]}`} className="flex w-full h-full items-center py-2 pl-3" to={{ pathname: `/${encodeURIComponent(this.props.site.domain)}/filter/${filterGroupForFilter(key)}`, search: window.location.search }}>
+          <span className="inline-block max-w-2xs md:max-w-xs truncate">{filterText(key, value, query)}</span>
+        </Link>
         <span title={`Remove filter: ${formattedFilters[key]}`} className="flex h-full w-full px-2 cursor-pointer hover:text-indigo-700 dark:hover:text-indigo-500 items-center" onClick={() => removeFilter(key, history, query)}>
           <XIcon className="w-4 h-4" />
         </span>
@@ -266,9 +260,9 @@ class Filters extends React.Component {
 
     return (
       <>
-        <PlusIcon className="-ml-1 mr-1 h-4 w-4 md:h-5 md:w-5" aria-hidden="true" />
+        <SearchIcon className="-ml-1 mr-1 h-4 w-4 md:h-4 md:w-4" aria-hidden="true" />
         {/* This would have been a good use-case for JSX! But in the interest of keeping the breakpoint width logic with TailwindCSS, this is a better long-term way to deal with it. */}
-        <span className="sm:hidden">Filter</span><span className="hidden sm:inline-block">Add filter</span>
+        <span className="sm:hidden">Filter</span><span className="hidden sm:inline-block">Filter</span>
       </>
     )
   }

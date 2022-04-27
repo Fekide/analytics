@@ -15,6 +15,7 @@ defmodule Plausible.Application do
       Plausible.Session.WriteBuffer,
       Plausible.Session.Store,
       Plausible.Session.Salts,
+      ReferrerBlocklist,
       {Oban, Application.get_env(:plausible, Oban)},
       {Cachex,
        Keyword.merge(Application.get_env(:plausible, :user_agent_cache), name: :user_agents)}
@@ -23,6 +24,7 @@ defmodule Plausible.Application do
     opts = [strategy: :one_for_one, name: Plausible.Supervisor]
     setup_sentry()
     setup_cache_stats()
+    Location.load_all()
     Application.put_env(:plausible, :server_start, Timex.now())
     Supervisor.start_link(children, opts)
   end
@@ -45,7 +47,7 @@ defmodule Plausible.Application do
 
     :telemetry.attach_many(
       "oban-errors",
-      [[:oban, :job, :exception], [:oban, :circuit, :trip]],
+      [[:oban, :job, :exception], [:oban, :notifier, :exception], [:oban, :plugin, :exception]],
       &ErrorReporter.handle_event/4,
       %{}
     )
