@@ -24,7 +24,7 @@ defmodule Plausible.Application do
     opts = [strategy: :one_for_one, name: Plausible.Supervisor]
     setup_sentry()
     setup_cache_stats()
-    Location.load_all()
+    Location.load_all(Application.get_env(:plausible, :load_locations_timeout))
     Application.put_env(:plausible, :server_start, Timex.now())
     Supervisor.start_link(children, opts)
   end

@@ -194,6 +194,11 @@ user_agent_cache_stats =
   |> get_var_from_path_or_env("USER_AGENT_CACHE_STATS", "false")
   |> String.to_existing_atom()
 
+{load_locations_timeout, ""} =
+  config_dir
+  |> get_var_from_path_or_env("LOAD_LOCATIONS_TIMEOUT", "30000")
+  |> Integer.parse()
+
 config :plausible,
   admin_user: admin_user,
   admin_email: admin_email,
@@ -205,7 +210,8 @@ config :plausible,
   site_limit_exempt: site_limit_exempt,
   is_selfhost: is_selfhost,
   custom_script_name: custom_script_name,
-  domain_blacklist: domain_blacklist
+  domain_blacklist: domain_blacklist,
+  load_locations_timeout: load_locations_timeout
 
 # Could not get this nested directly, so now interpretation is put here
 disable_registration =
