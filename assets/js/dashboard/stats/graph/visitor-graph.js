@@ -48,6 +48,7 @@ export const METRIC_FORMATTER = {
 class LineGraph extends React.Component {
   constructor(props) {
     super(props);
+    this.boundary = React.createRef()
     this.regenerateChart = this.regenerateChart.bind(this);
     this.updateWindowDimensions =  this.updateWindowDimensions.bind(this);
     this.state = {
@@ -291,8 +292,8 @@ class LineGraph extends React.Component {
 
     return (
       <div className="graph-inner">
-        <div className="flex flex-wrap">
-          <TopStats query={query} metric={metric} updateMetric={updateMetric} topStatData={topStatData}/>
+        <div className="flex flex-wrap" ref={this.boundary}>
+          <TopStats query={query} metric={metric} updateMetric={updateMetric} topStatData={topStatData} tooltipBoundary={this.boundary.current} />
         </div>
         <div className="relative px-2">
           <div className="absolute right-4 -top-10 flex">
@@ -349,14 +350,12 @@ export default class VisitorGraph extends React.Component {
     const topStatLabels = topStatData && topStatData.top_stats.map(({ name }) => METRIC_MAPPING[name]).filter(name => name)
     const prevTopStatLabels = prevState.topStatData && prevState.topStatData.top_stats.map(({ name }) => METRIC_MAPPING[name]).filter(name => name)
     if (topStatLabels && `${topStatLabels}` !== `${prevTopStatLabels}`) {
-      if (!topStatLabels.includes(savedMetric) && savedMetric !== "") {
-        if (this.props.query.filters.goal && metric !== 'conversions') {
-          this.setState({ metric: 'conversions' })
-        } else {
-          this.setState({ metric: topStatLabels[0] })
-        }
-      } else {
+      if (this.props.query.filters.goal && metric !== 'conversions') {
+        this.setState({ metric: 'conversions' })
+      } else if (topStatLabels.includes(savedMetric) && savedMetric !== "") {
         this.setState({ metric: savedMetric })
+      } else {
+        this.setState({ metric: topStatLabels[0] })
       }
     }
   }

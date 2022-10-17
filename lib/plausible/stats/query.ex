@@ -7,6 +7,7 @@ defmodule Plausible.Stats.Query do
             include_imported: false
 
   @default_sample_threshold 20_000_000
+  alias Plausible.Stats.FilterParser
 
   def shift_back(%__MODULE__{period: "year"} = query, site) do
     # Querying current year to date
@@ -68,7 +69,7 @@ defmodule Plausible.Stats.Query do
       period: "realtime",
       interval: "minute",
       date_range: Date.range(date, date),
-      filters: parse_filters(params),
+      filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold),
       include_imported: false
     }
@@ -81,7 +82,7 @@ defmodule Plausible.Stats.Query do
       period: "day",
       date_range: Date.range(date, date),
       interval: "hour",
-      filters: parse_filters(params),
+      filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold)
     }
     |> maybe_include_imported(site, params)
@@ -95,7 +96,7 @@ defmodule Plausible.Stats.Query do
       period: "7d",
       date_range: Date.range(start_date, end_date),
       interval: "date",
-      filters: parse_filters(params),
+      filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold)
     }
     |> maybe_include_imported(site, params)
@@ -109,7 +110,7 @@ defmodule Plausible.Stats.Query do
       period: "30d",
       date_range: Date.range(start_date, end_date),
       interval: "date",
-      filters: parse_filters(params),
+      filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold)
     }
     |> maybe_include_imported(site, params)
@@ -125,7 +126,7 @@ defmodule Plausible.Stats.Query do
       period: "month",
       date_range: Date.range(start_date, end_date),
       interval: "date",
-      filters: parse_filters(params),
+      filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold)
     }
     |> maybe_include_imported(site, params)
@@ -144,7 +145,7 @@ defmodule Plausible.Stats.Query do
       period: "6mo",
       date_range: Date.range(start_date, end_date),
       interval: Map.get(params, "interval", "month"),
-      filters: parse_filters(params),
+      filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold)
     }
     |> maybe_include_imported(site, params)
@@ -163,7 +164,7 @@ defmodule Plausible.Stats.Query do
       period: "12mo",
       date_range: Date.range(start_date, end_date),
       interval: Map.get(params, "interval", "month"),
-      filters: parse_filters(params),
+      filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold)
     }
     |> maybe_include_imported(site, params)
@@ -180,20 +181,15 @@ defmodule Plausible.Stats.Query do
       period: "year",
       date_range: Date.range(start_date, end_date),
       interval: Map.get(params, "interval", "month"),
-      filters: parse_filters(params),
+      filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold)
     }
     |> maybe_include_imported(site, params)
   end
 
   def from(site, %{"period" => "all"} = params) do
-    start_date =
-      site.stats_start_date
-      |> Timex.Timezone.convert("UTC")
-      |> Timex.Timezone.convert(site.timezone)
-      |> Timex.to_date()
-
     now = today(site.timezone)
+    start_date = Plausible.Site.local_start_date(site) || now
 
     cond do
       Timex.diff(now, start_date, :months) > 0 ->
@@ -245,7 +241,7 @@ defmodule Plausible.Stats.Query do
       period: "custom",
       date_range: Date.range(from_date, to_date),
       interval: Map.get(params, "interval", "date"),
-      filters: parse_filters(params),
+      filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold)
     }
     |> maybe_include_imported(site, params)
@@ -325,46 +321,6 @@ defmodule Plausible.Stats.Query do
       _ -> Timex.now(tz) |> Timex.to_date()
     end
   end
-
-  defp parse_filters(%{"filters" => filters}) when is_binary(filters) do
-    case Jason.decode(filters) do
-      {:ok, parsed} -> parsed
-      {:error, err} -> parse_filter_expression(err.data)
-    end
-  end
-
-  defp parse_filters(%{"filters" => filters}) when is_map(filters), do: filters
-  defp parse_filters(_), do: %{}
-
-  defp parse_filter_expression(str) do
-    filters = String.split(str, ";")
-
-    Enum.map(filters, &parse_single_filter/1)
-    |> Enum.into(%{})
-  end
-
-  defp parse_single_filter(str) do
-    [key, val] =
-      String.trim(str)
-      |> String.split(["==", "!="], trim: true)
-      |> Enum.map(&String.trim/1)
-
-    is_negated = String.contains?(str, "!=")
-    is_list = String.contains?(val, "|")
-    is_wildcard = String.contains?(val, "*")
-
-    cond do
-      key == "event:goal" -> {key, parse_goal_filter(val)}
-      is_wildcard && is_negated -> {key, {:does_not_match, val}}
-      is_wildcard -> {key, {:matches, val}}
-      is_list -> {key, {:member, String.split(val, "|")}}
-      is_negated -> {key, {:is_not, val}}
-      true -> {key, {:is, val}}
-    end
-  end
-
-  defp parse_goal_filter("Visit " <> page), do: {:is, :page, page}
-  defp parse_goal_filter(event), do: {:is, :event, event}
 
   defp maybe_include_imported(query, site, params) do
     imported_data_requested = params["with_imported"] == "true"

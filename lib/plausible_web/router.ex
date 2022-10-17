@@ -101,6 +101,7 @@ defmodule PlausibleWeb.Router do
     pipe_through [:public_api, PlausibleWeb.AuthorizeSitesApiPlug]
 
     post "/", ExternalSitesController, :create_site
+    get "/:site_id", ExternalSitesController, :get_site
     delete "/:site_id", ExternalSitesController, :delete_site
     put "/shared-links", ExternalSitesController, :find_or_create_shared_link
     put "/goals", ExternalSitesController, :find_or_create_goal
@@ -113,6 +114,7 @@ defmodule PlausibleWeb.Router do
     post "/event", Api.ExternalController, :event
     get "/error", Api.ExternalController, :error
     get "/health", Api.ExternalController, :health
+    get "/system", Api.ExternalController, :info
 
     post "/paddle/webhook", Api.PaddleController, :webhook
 
@@ -171,6 +173,7 @@ defmodule PlausibleWeb.Router do
       get "/billing/upgrade/enterprise/:plan_id", BillingController, :upgrade_enterprise_plan
       get "/billing/change-plan/enterprise/:plan_id", BillingController, :change_enterprise_plan
       get "/billing/upgrade-success", BillingController, :upgrade_success
+      get "/billing/subscription/ping", BillingController, :ping_subscription
     end
 
     get "/sites", SiteController, :index

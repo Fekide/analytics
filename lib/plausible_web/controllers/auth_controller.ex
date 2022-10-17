@@ -25,7 +25,7 @@ defmodule PlausibleWeb.AuthController do
             ]
 
   def register_form(conn, _params) do
-    if Keyword.fetch!(Application.get_env(:plausible, :selfhost), :disable_registration) do
+    if Keyword.fetch!(Application.get_env(:plausible, :selfhost), :disable_registration) != false do
       redirect(conn, to: Routes.auth_path(conn, :login_form))
     else
       changeset = Plausible.Auth.User.changeset(%Plausible.Auth.User{})
@@ -38,7 +38,7 @@ defmodule PlausibleWeb.AuthController do
   end
 
   def register(conn, params) do
-    if Keyword.fetch!(Application.get_env(:plausible, :selfhost), :disable_registration) do
+    if Keyword.fetch!(Application.get_env(:plausible, :selfhost), :disable_registration) != false do
       redirect(conn, to: Routes.auth_path(conn, :login_form))
     else
       user = Plausible.Auth.User.new(params["user"])
@@ -77,7 +77,7 @@ defmodule PlausibleWeb.AuthController do
     if Keyword.fetch!(
          Application.get_env(:plausible, :selfhost),
          :disable_invitation_registration
-       ) do
+       ) == true do
       redirect(conn, to: Routes.auth_path(conn, :login_form))
     else
       invitation = Repo.get_by(Plausible.Auth.Invitation, invitation_id: invitation_id)
@@ -103,7 +103,7 @@ defmodule PlausibleWeb.AuthController do
     if Keyword.fetch!(
          Application.get_env(:plausible, :selfhost),
          :disable_invitation_registration
-       ) do
+       ) == true do
       redirect(conn, to: Routes.auth_path(conn, :login_form))
     else
       invitation = Repo.get_by(Plausible.Auth.Invitation, invitation_id: invitation_id)
@@ -151,9 +151,14 @@ defmodule PlausibleWeb.AuthController do
 
   defp send_email_verification(user) do
     code = Auth.issue_email_verification(user)
-    Logger.info("VERIFICATION CODE: #{code}")
     email_template = PlausibleWeb.Email.activation_email(user, code)
-    Plausible.Mailer.send_email(email_template)
+    result = Plausible.Mailer.send_email(email_template)
+
+    Logger.debug(
+      "E-mail verification e-mail sent. In dev environment GET /sent-emails for details."
+    )
+
+    result
   end
 
   defp set_user_session(conn, user) do
@@ -256,9 +261,12 @@ defmodule PlausibleWeb.AuthController do
       if user do
         token = Auth.Token.sign_password_reset(email)
         url = PlausibleWeb.Endpoint.url() <> "/password/reset?token=#{token}"
-        Logger.debug("PASSWORD RESET LINK: " <> url)
         email_template = PlausibleWeb.Email.password_reset_email(email, url)
         Plausible.Mailer.deliver_later(email_template)
+
+        Logger.debug(
+          "Password reset e-mail sent. In dev environment GET /sent-emails for details."
+        )
 
         render(conn, "password_reset_request_success.html",
           email: email,
@@ -443,20 +451,8 @@ defmodule PlausibleWeb.AuthController do
   end
 
   def user_settings(conn, _params) do
-    user = conn.assigns[:current_user]
-    changeset = Auth.User.changeset(user)
-
-    {usage_pageviews, usage_custom_events} = Plausible.Billing.usage_breakdown(user)
-
-    render(conn, "user_settings.html",
-      user: user |> Repo.preload(:api_keys),
-      changeset: changeset,
-      subscription: user.subscription,
-      invoices: Plausible.Billing.paddle_api().get_invoices(user.subscription),
-      theme: user.theme || "system",
-      usage_pageviews: usage_pageviews,
-      usage_custom_events: usage_custom_events
-    )
+    changeset = Auth.User.changeset(conn.assigns[:current_user])
+    render_settings(conn, changeset)
   end
 
   def save_settings(conn, %{"user" => user_params}) do
@@ -469,11 +465,23 @@ defmodule PlausibleWeb.AuthController do
         |> redirect(to: Routes.auth_path(conn, :user_settings))
 
       {:error, changeset} ->
-        render(conn, "user_settings.html",
-          changeset: changeset,
-          subscription: conn.assigns[:current_user].subscription
-        )
+        render_settings(conn, changeset)
     end
+  end
+
+  defp render_settings(conn, changeset) do
+    user = conn.assigns[:current_user]
+    {usage_pageviews, usage_custom_events} = Plausible.Billing.usage_breakdown(user)
+
+    render(conn, "user_settings.html",
+      user: user |> Repo.preload(:api_keys),
+      changeset: changeset,
+      subscription: user.subscription,
+      invoices: Plausible.Billing.paddle_api().get_invoices(user.subscription),
+      theme: user.theme || "system",
+      usage_pageviews: usage_pageviews,
+      usage_custom_events: usage_custom_events
+    )
   end
 
   def new_api_key(conn, _params) do
@@ -488,6 +496,7 @@ defmodule PlausibleWeb.AuthController do
 
   def create_api_key(conn, %{"api_key" => key_params}) do
     api_key = %Auth.ApiKey{user_id: conn.assigns[:current_user].id}
+    key_params = Map.delete(key_params, "user_id")
     changeset = Auth.ApiKey.changeset(api_key, key_params)
 
     case Repo.insert(changeset) do
@@ -505,7 +514,12 @@ defmodule PlausibleWeb.AuthController do
   end
 
   def delete_api_key(conn, %{"id" => id}) do
-    Repo.get_by(Auth.ApiKey, id: id)
+    query =
+      from k in Auth.ApiKey,
+        where: k.id == ^id and k.user_id == ^conn.assigns[:current_user].id
+
+    query
+    |> Repo.one!()
     |> Repo.delete!()
 
     conn
@@ -523,7 +537,7 @@ defmodule PlausibleWeb.AuthController do
       Repo.delete!(membership)
 
       if membership.role == :owner do
-        Plausible.Sites.delete!(membership.site)
+        Plausible.Purge.delete_site!(membership.site)
       end
     end
 
@@ -543,16 +557,19 @@ defmodule PlausibleWeb.AuthController do
   end
 
   def google_auth_callback(conn, %{"code" => code, "state" => state}) do
-    res = Plausible.Google.Api.fetch_access_token(code)
+    res = Plausible.Google.HTTP.fetch_access_token(code)
     [site_id, redirect_to] = Jason.decode!(state)
     site = Repo.get(Plausible.Site, site_id)
+    expires_at = NaiveDateTime.add(NaiveDateTime.utc_now(), res["expires_in"])
 
     case redirect_to do
       "import" ->
         redirect(conn,
           to:
             Routes.site_path(conn, :import_from_google_view_id_form, site.domain,
-              access_token: res["access_token"]
+              access_token: res["access_token"],
+              refresh_token: res["refresh_token"],
+              expires_at: NaiveDateTime.to_iso8601(expires_at)
             )
         )
 
@@ -565,7 +582,7 @@ defmodule PlausibleWeb.AuthController do
           email: id["email"],
           refresh_token: res["refresh_token"],
           access_token: res["access_token"],
-          expires: NaiveDateTime.utc_now() |> NaiveDateTime.add(res["expires_in"]),
+          expires: expires_at,
           user_id: conn.assigns[:current_user].id,
           site_id: site_id
         })
