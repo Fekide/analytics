@@ -135,7 +135,6 @@ disable_registration =
   |> get_var_from_path_or_env("DISABLE_REGISTRATION", "false")
   |> String.to_existing_atom()
 
-
 disable_invitation_registration =
   config_dir
   |> get_var_from_path_or_env("DISABLE_INVITATION_REGISTRATION", "false")
@@ -149,7 +148,6 @@ only_invitation_registration =
 if disable_registration not in [true, false, :invite_only] do
   raise "DISABLE_REGISTRATION must be one of `true`, `false`, or `invite_only`. See https://plausible.io/docs/self-hosting-configuration#server"
 end
-
 
 hcaptcha_sitekey = get_var_from_path_or_env(config_dir, "HCAPTCHA_SITEKEY")
 hcaptcha_secret = get_var_from_path_or_env(config_dir, "HCAPTCHA_SECRET")
