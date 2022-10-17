@@ -32,7 +32,7 @@ defmodule Plausible.Application do
     OpentelemetryPhoenix.setup()
     OpentelemetryEcto.setup([:plausible, :repo])
     OpentelemetryEcto.setup([:plausible, :clickhouse_repo])
-    Location.load_all(Application.get_env(:plausible, :load_locations_timeout))
+    Location.load_all()
 
     Supervisor.start_link(children, opts)
   end
