@@ -1,6 +1,5 @@
 defmodule PlausibleWeb.Api.StatsController.CountriesTest do
   use PlausibleWeb.ConnCase
-  import Plausible.TestUtils
 
   describe "GET /api/stats/:domain/countries" do
     setup [:create_user, :log_in, :create_new_site, :add_imported_data]
@@ -102,15 +101,6 @@ defmodule PlausibleWeb.Api.StatsController.CountriesTest do
 
       assert json_response(conn, 200) == [
                %{
-                 "code" => "GB",
-                 "alpha_3" => "GBR",
-                 "name" => "United Kingdom",
-                 "flag" => "🇬🇧",
-                 "total_visitors" => 1,
-                 "visitors" => 1,
-                 "conversion_rate" => 100.0
-               },
-               %{
                  "code" => "EE",
                  "alpha_3" => "EST",
                  "name" => "Estonia",
@@ -118,6 +108,15 @@ defmodule PlausibleWeb.Api.StatsController.CountriesTest do
                  "total_visitors" => 2,
                  "visitors" => 1,
                  "conversion_rate" => 50.0
+               },
+               %{
+                 "code" => "GB",
+                 "alpha_3" => "GBR",
+                 "name" => "United Kingdom",
+                 "flag" => "🇬🇧",
+                 "total_visitors" => 1,
+                 "visitors" => 1,
+                 "conversion_rate" => 100.0
                }
              ]
     end

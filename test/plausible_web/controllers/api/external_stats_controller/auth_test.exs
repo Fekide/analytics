@@ -1,6 +1,5 @@
 defmodule PlausibleWeb.Api.ExternalStatsController.AuthTest do
   use PlausibleWeb.ConnCase
-  import Plausible.TestUtils
 
   setup [:create_user, :create_api_key]
 
@@ -69,12 +68,7 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AuthTest do
 
   describe "super admin access" do
     setup %{user: user} do
-      original_env = Application.get_env(:plausible, :super_admin_user_ids)
-      Application.put_env(:plausible, :super_admin_user_ids, [user.id])
-
-      on_exit(fn ->
-        Application.put_env(:plausible, :super_admin_user_ids, original_env)
-      end)
+      patch_env(:super_admin_user_ids, [user.id])
     end
 
     test "can access as a super admin", %{conn: conn, api_key: api_key} do
@@ -127,6 +121,33 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AuthTest do
       429,
       "Too many API requests. Your API key is limited to 3 requests per hour."
     )
+  end
+
+  @tag :v2_only
+  test "can access with either site_id after domain change", %{
+    conn: conn,
+    user: user,
+    api_key: api_key
+  } do
+    old_domain = "old.example.com"
+    new_domain = "new.example.com"
+    site = insert(:site, domain: old_domain, members: [user])
+
+    Plausible.Site.Domain.change(site, new_domain)
+
+    conn
+    |> with_api_key(api_key)
+    |> get("/api/v1/stats/aggregate", %{"site_id" => new_domain, "metrics" => "pageviews"})
+    |> assert_ok(%{
+      "results" => %{"pageviews" => %{"value" => 0}}
+    })
+
+    conn
+    |> with_api_key(api_key)
+    |> get("/api/v1/stats/aggregate", %{"site_id" => old_domain, "metrics" => "pageviews"})
+    |> assert_ok(%{
+      "results" => %{"pageviews" => %{"value" => 0}}
+    })
   end
 
   defp with_api_key(conn, api_key) do

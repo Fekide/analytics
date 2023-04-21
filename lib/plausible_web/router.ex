@@ -4,10 +4,10 @@ defmodule PlausibleWeb.Router do
 
   pipeline :browser do
     plug :accepts, ["html"]
-    plug PlausibleWeb.Firewall
     plug :fetch_session
     plug :fetch_flash
     plug :put_secure_browser_headers
+    plug PlausibleWeb.FirstLaunchPlug, redirect_to: "/register"
     plug PlausibleWeb.SessionTimeoutPlug, timeout_after_seconds: @two_weeks_in_seconds
     plug PlausibleWeb.AuthPlug
     plug PlausibleWeb.LastSeenPlug
@@ -24,21 +24,18 @@ defmodule PlausibleWeb.Router do
 
   pipeline :api do
     plug :accepts, ["json"]
-    plug PlausibleWeb.Firewall
     plug :fetch_session
     plug PlausibleWeb.AuthPlug
   end
 
   pipeline :internal_stats_api do
     plug :accepts, ["json"]
-    plug PlausibleWeb.Firewall
     plug :fetch_session
     plug PlausibleWeb.AuthorizeSiteAccess
   end
 
   pipeline :public_api do
     plug :accepts, ["json"]
-    plug PlausibleWeb.Firewall
   end
 
   pipeline :flags do
@@ -101,11 +98,12 @@ defmodule PlausibleWeb.Router do
     pipe_through [:public_api, PlausibleWeb.AuthorizeSitesApiPlug]
 
     post "/", ExternalSitesController, :create_site
-    get "/:site_id", ExternalSitesController, :get_site
-    delete "/:site_id", ExternalSitesController, :delete_site
     put "/shared-links", ExternalSitesController, :find_or_create_shared_link
     put "/goals", ExternalSitesController, :find_or_create_goal
     delete "/goals/:goal_id", ExternalSitesController, :delete_goal
+    get "/:site_id", ExternalSitesController, :get_site
+    put "/:site_id", ExternalSitesController, :update_site
+    delete "/:site_id", ExternalSitesController, :delete_site
   end
 
   scope "/api", PlausibleWeb do
@@ -138,6 +136,7 @@ defmodule PlausibleWeb.Router do
     post "/password/request-reset", AuthController, :password_reset_request
     get "/password/reset", AuthController, :password_reset_form
     post "/password/reset", AuthController, :password_reset
+    post "/error_report", ErrorReportController, :submit_error_report
   end
 
   scope "/", PlausibleWeb do
@@ -164,21 +163,24 @@ defmodule PlausibleWeb.Router do
 
     get "/", PageController, :index
 
-    if !Application.get_env(:plausible, :is_selfhost) do
-      get "/billing/change-plan", BillingController, :change_plan_form
-      get "/billing/change-plan/preview/:plan_id", BillingController, :change_plan_preview
-      post "/billing/change-plan/:new_plan_id", BillingController, :change_plan
-      get "/billing/upgrade", BillingController, :upgrade
-      get "/billing/upgrade/:plan_id", BillingController, :upgrade_to_plan
-      get "/billing/upgrade/enterprise/:plan_id", BillingController, :upgrade_enterprise_plan
-      get "/billing/change-plan/enterprise/:plan_id", BillingController, :change_enterprise_plan
-      get "/billing/upgrade-success", BillingController, :upgrade_success
-      get "/billing/subscription/ping", BillingController, :ping_subscription
-    end
+
+    get "/billing/change-plan", BillingController, :change_plan_form
+    get "/billing/change-plan/preview/:plan_id", BillingController, :change_plan_preview
+    post "/billing/change-plan/:new_plan_id", BillingController, :change_plan
+    get "/billing/upgrade", BillingController, :upgrade
+    get "/billing/upgrade/:plan_id", BillingController, :upgrade_to_plan
+    get "/billing/upgrade/enterprise/:plan_id", BillingController, :upgrade_enterprise_plan
+    get "/billing/change-plan/enterprise/:plan_id", BillingController, :change_enterprise_plan
+    get "/billing/upgrade-success", BillingController, :upgrade_success
+    get "/billing/subscription/ping", BillingController, :ping_subscription
+
 
     get "/sites", SiteController, :index
     get "/sites/new", SiteController, :new
     post "/sites", SiteController, :create_site
+    get "/sites/:website/change-domain", SiteController, :change_domain
+    put "/sites/:website/change-domain", SiteController, :change_domain_submit
+    get "/:website/change-domain-snippet", SiteController, :add_snippet_after_domain_change
     post "/sites/:website/make-public", SiteController, :make_public
     post "/sites/:website/make-private", SiteController, :make_private
     post "/sites/:website/weekly-report/enable", SiteController, :enable_weekly_report
@@ -224,8 +226,10 @@ defmodule PlausibleWeb.Router do
     post "/sites/:website/memberships/invite", Site.MembershipController, :invite_member
 
     post "/sites/invitations/:invitation_id/accept", InvitationController, :accept_invitation
+
     post "/sites/invitations/:invitation_id/reject", InvitationController, :reject_invitation
-    delete "/sites/invitations/:invitation_id", InvitationController, :remove_invitation
+
+    delete "/sites/:website/invitations/:invitation_id", InvitationController, :remove_invitation
 
     get "/sites/:website/transfer-ownership", Site.MembershipController, :transfer_ownership_form
     post "/sites/:website/transfer-ownership", Site.MembershipController, :transfer_ownership

@@ -4,28 +4,36 @@ defmodule Plausible.Sites do
   alias Plausible.Site.SharedLink
   import Ecto.Query
 
+  def get_by_domain(domain) do
+    Repo.get_by(Site, domain: domain)
+  end
+
   def create(user, params) do
-    limit = Plausible.Billing.sites_limit(user)
+    site_changeset = Site.changeset(%Site{}, params)
 
-    if owned_sites_count(user) >= limit do
-      {:error, :limit, limit}
-    else
-      site_changeset = Site.changeset(%Site{}, params)
+    Ecto.Multi.new()
+    |> Ecto.Multi.run(:limit, fn _, _ ->
+      limit = Plausible.Billing.sites_limit(user)
+      count = owned_sites_count(user)
 
-      Ecto.Multi.new()
-      |> Ecto.Multi.insert(:site, site_changeset)
-      |> Ecto.Multi.run(:site_membership, fn repo, %{site: site} ->
-        membership_changeset =
-          Site.Membership.changeset(%Site.Membership{}, %{
-            site_id: site.id,
-            user_id: user.id
-          })
+      if count >= limit do
+        {:error, limit}
+      else
+        {:ok, count}
+      end
+    end)
+    |> Ecto.Multi.insert(:site, site_changeset)
+    |> Ecto.Multi.run(:site_membership, fn repo, %{site: site} ->
+      membership_changeset =
+        Site.Membership.changeset(%Site.Membership{}, %{
+          site_id: site.id,
+          user_id: user.id
+        })
 
-        repo.insert(membership_changeset)
-      end)
-      |> maybe_start_trial(user)
-      |> Repo.transaction()
-    end
+      repo.insert(membership_changeset)
+    end)
+    |> maybe_start_trial(user)
+    |> Repo.transaction()
   end
 
   defp maybe_start_trial(multi, user) do
@@ -99,7 +107,7 @@ defmodule Plausible.Sites do
       on: sm.site_id == s.id,
       where: sm.user_id == ^user_id,
       where: sm.role in ^roles,
-      where: s.domain == ^domain,
+      where: s.domain == ^domain or s.domain_changed_from == ^domain,
       select: s
     )
   end
@@ -141,6 +149,13 @@ defmodule Plausible.Sites do
     user
     |> owned_sites_query()
     |> select([site], site.domain)
+    |> Repo.all()
+  end
+
+  def owned_site_ids(user) do
+    user
+    |> owned_sites_query()
+    |> select([site], site.id)
     |> Repo.all()
   end
 

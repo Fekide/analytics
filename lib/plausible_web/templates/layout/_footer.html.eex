@@ -12,9 +12,8 @@
         <% else %>
           powered by <a class="text-gray-100 hover:text-white" href="https://feki.de">Feki.de e.V.</a> <br />
         <% end %>
-        We <a class="text-gray-300 hover:text-white" rel="noreferrer" href="https://plausible.io/giving-back">give back</a> 5% of our revenue<br />
-        100% self-funded and independent <br />
-        Built by <a class="text-gray-100 hover:text-white" rel="noreferrer" href="https://twitter.com/ukutaht">@ukutaht</a> and <a class="text-gray-100 hover:text-white" rel="noreferrer" href="https://twitter.com/markosaric">@markosaric</a><br />
+        We <a class="text-gray-300 hover:text-white" rel="noreferrer" href="https://plausible.io/giving-back">give back</a> 5% of our revenue.<br />
+        Solely funded by our subscribers.<br />
         </p>
         <%= if Application.get_env(:plausible, :is_selfhost) do %>
           <div class="mt-4">
@@ -119,11 +118,6 @@
                 </a>
               </li>
               <li class="mt-4">
-                <a rel="noreferrer" target="_blank" href="https://plausible.io/forum" class="text-base leading-6 text-gray-300 hover:text-white">
-                  Forum
-                </a>
-              </li>
-              <li class="mt-4">
                 <a rel="noreferrer" target="_blank" href="https://twitter.com/plausiblehq" class="text-base leading-6 text-gray-300 hover:text-white">
                   Twitter
                 </a>
@@ -131,6 +125,11 @@
               <li class="mt-4">
                 <a rel="noreferrer" target="_blank" rel="me" href="https://fosstodon.org/@plausible" class="text-base leading-6 text-gray-300 hover:text-white">
                   Mastodon
+                </a>
+              </li>
+              <li class="mt-4">
+                <a rel="noreferrer" target="_blank" href="https://www.linkedin.com/company/plausible-analytics/" class="text-base leading-6 text-gray-300 hover:text-white">
+                  LinkedIn
                 </a>
               </li>
             </ul>

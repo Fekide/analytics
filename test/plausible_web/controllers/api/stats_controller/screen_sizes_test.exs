@@ -1,6 +1,5 @@
 defmodule PlausibleWeb.Api.StatsController.ScreenSizesTest do
   use PlausibleWeb.ConnCase
-  import Plausible.TestUtils
 
   describe "GET /api/stats/:domain/browsers" do
     setup [:create_user, :log_in, :create_new_site, :add_imported_data]
@@ -17,6 +16,33 @@ defmodule PlausibleWeb.Api.StatsController.ScreenSizesTest do
       assert json_response(conn, 200) == [
                %{"name" => "Desktop", "visitors" => 2, "percentage" => 67},
                %{"name" => "Laptop", "visitors" => 1, "percentage" => 33}
+             ]
+    end
+
+    test "returns (not set) when appropriate", %{conn: conn, site: site} do
+      populate_stats(site, [
+        build(:pageview,
+          screen_size: ""
+        ),
+        build(:pageview,
+          screen_size: "Desktop"
+        )
+      ])
+
+      conn = get(conn, "/api/stats/#{site.domain}/screen-sizes?period=day")
+
+      assert json_response(conn, 200) == [
+               %{"name" => "(not set)", "visitors" => 1, "percentage" => 50},
+               %{"name" => "Desktop", "visitors" => 1, "percentage" => 50}
+             ]
+
+      conn = get(conn, "/api/stats/#{site.domain}/screen-sizes?period=day")
+
+      filters = Jason.encode!(%{screen: "(not set)"})
+      conn = get(conn, "/api/stats/#{site.domain}/screen-sizes?period=day&filters=#{filters}")
+
+      assert json_response(conn, 200) == [
+               %{"name" => "(not set)", "visitors" => 1, "percentage" => 100}
              ]
     end
 
@@ -135,6 +161,25 @@ defmodule PlausibleWeb.Api.StatsController.ScreenSizesTest do
                  "visitors" => 1,
                  "conversion_rate" => 50.0
                }
+             ]
+    end
+
+    test "returns screen sizes with not_member filter type", %{conn: conn, site: site} do
+      populate_stats(site, [
+        build(:pageview, referrer_source: "Google", screen_size: "Desktop"),
+        build(:pageview, referrer_source: "Bad source", screen_size: "Desktop"),
+        build(:pageview, referrer_source: "Google", screen_size: "Desktop"),
+        build(:pageview, referrer_source: "Twitter", screen_size: "Mobile"),
+        build(:pageview, referrer_source: "Second bad source", screen_size: "Mobile")
+      ])
+
+      filters = Jason.encode!(%{"source" => "!Bad source|Second bad source"})
+
+      conn = get(conn, "/api/stats/#{site.domain}/screen-sizes?period=day&filters=#{filters}")
+
+      assert json_response(conn, 200) == [
+               %{"name" => "Desktop", "visitors" => 2, "percentage" => 67},
+               %{"name" => "Mobile", "visitors" => 1, "percentage" => 33}
              ]
     end
   end

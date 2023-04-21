@@ -1,6 +1,5 @@
 defmodule PlausibleWeb.Api.StatsController.BrowsersTest do
   use PlausibleWeb.ConnCase
-  import Plausible.TestUtils
 
   describe "GET /api/stats/:domain/browsers" do
     setup [:create_user, :log_in, :create_new_site, :add_imported_data]
@@ -130,6 +129,21 @@ defmodule PlausibleWeb.Api.StatsController.BrowsersTest do
                %{"name" => "Firefox", "visitors" => 1, "percentage" => 33}
              ]
     end
+
+    test "returns (not set) when appropriate", %{conn: conn, site: site} do
+      populate_stats(site, [
+        build(:pageview,
+          user_id: 123,
+          browser: ""
+        )
+      ])
+
+      conn = get(conn, "/api/stats/#{site.domain}/browsers?period=day")
+
+      assert json_response(conn, 200) == [
+               %{"name" => "(not set)", "visitors" => 1, "percentage" => 100}
+             ]
+    end
   end
 
   describe "GET /api/stats/:domain/browser-versions" do
@@ -154,6 +168,24 @@ defmodule PlausibleWeb.Api.StatsController.BrowsersTest do
       assert json_response(conn, 200) == [
                %{"name" => "78.0", "visitors" => 2, "percentage" => 67},
                %{"name" => "77.0", "visitors" => 1, "percentage" => 33}
+             ]
+    end
+
+    test "returns results for (not set)", %{conn: conn, site: site} do
+      populate_stats(site, [
+        build(:pageview, browser: "", browser_version: "")
+      ])
+
+      filters = Jason.encode!(%{browser: "(not set)"})
+
+      conn =
+        get(
+          conn,
+          "/api/stats/#{site.domain}/browser-versions?period=day&filters=#{filters}"
+        )
+
+      assert json_response(conn, 200) == [
+               %{"name" => "(not set)", "visitors" => 1, "percentage" => 100}
              ]
     end
   end

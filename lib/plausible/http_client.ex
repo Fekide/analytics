@@ -11,6 +11,7 @@ defmodule Plausible.HTTPClient.Non200Error do
 end
 
 defmodule Plausible.HTTPClient.Interface do
+  @type finch_request_opts() :: Keyword.t()
   @type url() :: Finch.Request.url()
   @type headers() :: Finch.Request.headers()
   @type params() :: Finch.Request.body() | map()
@@ -21,6 +22,7 @@ defmodule Plausible.HTTPClient.Interface do
   @callback get(url(), headers()) :: response()
   @callback get(url()) :: response()
   @callback post(url(), headers(), params()) :: response()
+  @callback post(url(), headers(), params(), finch_request_opts()) :: response()
 end
 
 defmodule Plausible.HTTPClient do
@@ -34,14 +36,17 @@ defmodule Plausible.HTTPClient do
   URL encoding is invoked.
   """
 
+  require OpenTelemetry.Tracer
+  alias Plausible.HTTPClient.Non200Error
+
   @doc """
   Make a POST request
   """
   @behaviour Plausible.HTTPClient.Interface
 
   @impl Plausible.HTTPClient.Interface
-  def post(url, headers \\ [], params \\ nil) do
-    call(:post, url, headers, params)
+  def post(url, headers \\ [], params \\ nil, finch_req_opts \\ []) do
+    call(:post, url, headers, params, finch_req_opts)
   end
 
   @doc """
@@ -59,22 +64,26 @@ defmodule Plausible.HTTPClient do
     Application.get_env(:plausible, :http_impl, __MODULE__)
   end
 
-  defp call(method, url, headers, params) do
-    {params, headers} = maybe_encode_params(params, headers)
+  defp call(method, url, headers, params, finch_req_opts \\ []) do
+    OpenTelemetry.Tracer.with_span "http_client.request" do
+      {params, headers} = maybe_encode_params(params, headers)
 
-    method
-    |> build_request(url, headers, params)
-    |> do_request()
-    |> maybe_decode_body()
-    |> tag_error()
+      method
+      |> build_request(url, headers, params)
+      |> trace_request()
+      |> do_request(finch_req_opts)
+      |> maybe_decode_body()
+      |> tag_error()
+      |> trace_response()
+    end
   end
 
   defp build_request(method, url, headers, params) do
     Finch.build(method, url, headers, params)
   end
 
-  defp do_request(request) do
-    Finch.request(request, Plausible.Finch)
+  defp do_request(request, finch_req_opts) do
+    Finch.request(request, Plausible.Finch, finch_req_opts)
   end
 
   defp maybe_encode_params(params, headers) when is_binary(params) or is_nil(params) do
@@ -107,7 +116,7 @@ defmodule Plausible.HTTPClient do
   end
 
   defp tag_error({:ok, %Finch.Response{status: _} = response}) do
-    {:error, Plausible.HTTPClient.Non200Error.new(response)}
+    {:error, Non200Error.new(response)}
   end
 
   defp tag_error({:error, _} = error) do
@@ -123,7 +132,7 @@ defmodule Plausible.HTTPClient do
     end
   end
 
-  defp maybe_decode_body(resp), do: resp
+  defp maybe_decode_body(response), do: response
 
   defp json?(headers) do
     found =
@@ -136,5 +145,40 @@ defmodule Plausible.HTTPClient do
       end)
 
     is_tuple(found)
+  end
+
+  defp trace_request(%Finch.Request{} = request) do
+    OpenTelemetry.Tracer.set_attributes([
+      {"http_client.request.host", request.host},
+      {"http_client.request.method", request.method},
+      {"http_client.request.path", request.path}
+    ])
+
+    request
+  end
+
+  defp trace_response(response) do
+    case response do
+      {:ok, %{status: status}} ->
+        OpenTelemetry.Tracer.set_attributes([
+          {"http_client.response.status", status}
+        ])
+
+      {:error, %Non200Error{reason: %{status: status}}} ->
+        OpenTelemetry.Tracer.set_attributes([
+          {"http_client.request.failure", "non_200"},
+          {"http_client.response.status", status}
+        ])
+
+      {:error, exception} when is_exception(exception) ->
+        OpenTelemetry.Tracer.set_attributes([
+          {"http_client.request.failure", Exception.message(exception)}
+        ])
+
+      _any ->
+        :skip
+    end
+
+    response
   end
 end

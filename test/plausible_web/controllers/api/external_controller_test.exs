@@ -2,36 +2,22 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
   use PlausibleWeb.ConnCase
   use Plausible.ClickhouseRepo
 
-  defp get_event(domain) do
-    Plausible.Event.WriteBuffer.flush()
-
-    ClickhouseRepo.one(
-      from e in Plausible.ClickhouseEvent,
-        where: e.domain == ^domain,
-        order_by: [desc: e.timestamp]
-    )
-  end
-
-  defp get_events(domain) do
-    Plausible.Event.WriteBuffer.flush()
-
-    ClickhouseRepo.all(
-      from e in Plausible.ClickhouseEvent,
-        where: e.domain == ^domain,
-        order_by: [desc: e.timestamp]
-    )
-  end
-
   @user_agent "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.110 Safari/537.36"
+  @user_agent_mobile "Mozilla/5.0 (Linux; Android 6.0; U007 Pro Build/MRA58K; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/44.0.2403.119 Mobile Safari/537.36"
+  @user_agent_tablet "Mozilla/5.0 (Linux; U; Android 4.2.2; it-it; Surfing TAB B 9.7 3G Build/JDQ39) AppleWebKit/534.30 (KHTML, like Gecko) Version/4.0 Mobile Safari/534.30"
 
   describe "POST /api/event" do
-    test "records the event", %{conn: conn} do
+    setup do
+      site = insert(:site)
+      {:ok, site: site}
+    end
+
+    test "records the event", %{conn: conn, site: site} do
       params = %{
-        domain: "external-controller-test-1.com",
+        domain: site.domain,
         name: "pageview",
         url: "http://gigride.live/",
-        referrer: "http://m.facebook.com/",
-        screen_width: 1440
+        referrer: "http://m.facebook.com/"
       }
 
       conn =
@@ -39,20 +25,25 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
         |> put_req_header("user-agent", @user_agent)
         |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-1.com")
+      pageview = get_event(site)
 
       assert response(conn, 202) == "ok"
       assert pageview.hostname == "gigride.live"
-      assert pageview.domain == "external-controller-test-1.com"
+
+      if Plausible.v2?() do
+        assert pageview.site_id == site.id
+      else
+        assert pageview.domain == site.domain
+      end
+
       assert pageview.pathname == "/"
     end
 
-    test "works with Content-Type: text/plain", %{conn: conn} do
+    test "works with Content-Type: text/plain", %{conn: conn, site: site} do
       params = %{
-        domain: "external-controller-test-text-plain.com",
+        domain: site.domain,
         name: "pageview",
-        url: "http://gigride.live/",
-        screen_width: 1440
+        url: "http://gigride.live/"
       }
 
       conn =
@@ -60,11 +51,17 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
         |> put_req_header("content-type", "text/plain")
         |> post("/api/event", Jason.encode!(params))
 
-      pageview = get_event("external-controller-test-text-plain.com")
+      pageview = get_event(site)
 
       assert response(conn, 202) == "ok"
       assert pageview.hostname == "gigride.live"
-      assert pageview.domain == "external-controller-test-text-plain.com"
+
+      if Plausible.v2?() do
+        assert pageview.site_id == site.id
+      else
+        assert pageview.domain == site.domain
+      end
+
       assert pageview.pathname == "/"
     end
 
@@ -77,13 +74,17 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       assert conn.status == 400
     end
 
-    test "can send to multiple dashboards by listing multiple domains", %{conn: conn} do
+    test "can send to multiple dashboards by listing multiple domains - same timestamp", %{
+      conn: conn,
+      site: site1
+    } do
+      site2 = insert(:site)
+
       params = %{
         name: "pageview",
         url: "http://gigride.live/",
         referrer: "http://m.facebook.com/",
-        domain: "test-domain1.com,test-domain2.com",
-        screen_width: 1440
+        domain: "#{site1.domain},#{site2.domain}"
       }
 
       conn =
@@ -92,89 +93,123 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
         |> post("/api/event", params)
 
       assert response(conn, 202) == "ok"
-      assert get_event("test-domain1.com")
-      assert get_event("test-domain2.com")
+      assert e1 = get_event(site1)
+      assert e2 = get_event(site2)
+
+      assert NaiveDateTime.compare(e1.timestamp, e2.timestamp) == :eq
     end
 
-    test "www. is stripped from domain", %{conn: conn} do
+    test "timestamps differ when two events sent in a row", %{conn: conn, site: site} do
+      params = %{
+        domain: site.domain,
+        name: "pageview",
+        url: "http://gigride.live/",
+        referrer: "http://m.facebook.com/"
+      }
+
+      t1 = System.convert_time_unit(System.monotonic_time(), :native, :millisecond)
+
+      conn
+      |> put_req_header("user-agent", @user_agent)
+      |> post("/api/event", params)
+
+      t2 = System.convert_time_unit(System.monotonic_time(), :native, :millisecond)
+
+      # timestamps are in second precision, so we need to wait for it to flip
+      Process.sleep(1000 - (t2 - t1))
+
+      conn
+      |> put_req_header("user-agent", @user_agent)
+      |> post("/api/event", params)
+
+      [e1, e2] = get_events(site)
+
+      assert NaiveDateTime.compare(e1.timestamp, e2.timestamp) == :gt
+    end
+
+    test "www. is stripped from domain", %{conn: conn, site: site} do
       params = %{
         name: "custom event",
         url: "http://gigride.live/",
-        domain: "www.external-controller-test-2.com"
+        domain: site.domain
       }
 
       conn
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-2.com")
+      pageview = get_event(site)
 
-      assert pageview.domain == "external-controller-test-2.com"
+      if Plausible.v2?() do
+        assert pageview.site_id == site.id
+      else
+        assert pageview.domain == site.domain
+      end
     end
 
-    test "www. is stripped from hostname", %{conn: conn} do
+    test "www. is stripped from hostname", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://www.example.com/",
-        domain: "external-controller-test-3.com"
+        domain: site.domain
       }
 
       conn
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-3.com")
+      pageview = get_event(site)
 
       assert pageview.hostname == "example.com"
     end
 
-    test "empty path defaults to /", %{conn: conn} do
+    test "empty path defaults to /", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://www.example.com",
-        domain: "external-controller-test-4.com"
+        domain: site.domain
       }
 
       conn
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-4.com")
+      pageview = get_event(site)
 
       assert pageview.pathname == "/"
     end
 
-    test "trailing whitespace is removed", %{conn: conn} do
+    test "trailing whitespace is removed", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://www.example.com/path ",
-        domain: "external-controller-test-trailing-whitespace.com"
+        domain: site.domain
       }
 
       conn
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-trailing-whitespace.com")
+      pageview = get_event(site)
 
       assert pageview.pathname == "/path"
     end
 
-    test "bots and crawlers are ignored", %{conn: conn} do
+    test "bots and crawlers are ignored", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://www.example.com/",
-        domain: "external-controller-test-5.com"
+        domain: site.domain
       }
 
       conn
       |> put_req_header("user-agent", "generic crawler")
       |> post("/api/event", params)
 
-      assert get_event("external-controller-test-5.com") == nil
+      assert get_event(site) == nil
     end
 
-    test "Headless Chrome is ignored", %{conn: conn} do
+    test "Headless Chrome is ignored", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://www.example.com/",
-        domain: "headless-chrome-test.com"
+        domain: site.domain
       }
 
       conn
@@ -184,14 +219,14 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       )
       |> post("/api/event", params)
 
-      assert get_event("headless-chrome-test.com") == nil
+      assert get_event(site) == nil
     end
 
-    test "parses user_agent", %{conn: conn} do
+    test "parses user_agent", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://gigride.live/",
-        domain: "external-controller-test-6.com"
+        domain: site.domain
       }
 
       conn =
@@ -199,7 +234,7 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
         |> put_req_header("user-agent", @user_agent)
         |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-6.com")
+      pageview = get_event(site)
 
       assert response(conn, 202) == "ok"
       assert pageview.operating_system == "Mac"
@@ -208,12 +243,12 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       assert pageview.browser_version == "70.0"
     end
 
-    test "parses referrer", %{conn: conn} do
+    test "parses referrer", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://gigride.live/",
         referrer: "https://facebook.com",
-        domain: "external-controller-test-7.com"
+        domain: site.domain
       }
 
       conn =
@@ -221,18 +256,18 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
         |> put_req_header("user-agent", @user_agent)
         |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-7.com")
+      pageview = get_event(site)
 
       assert response(conn, 202) == "ok"
       assert pageview.referrer_source == "Facebook"
     end
 
-    test "strips trailing slash from referrer", %{conn: conn} do
+    test "strips trailing slash from referrer", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://gigride.live/",
         referrer: "https://facebook.com/page/",
-        domain: "external-controller-test-8.com"
+        domain: site.domain
       }
 
       conn =
@@ -240,20 +275,19 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
         |> put_req_header("user-agent", @user_agent)
         |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-8.com")
+      pageview = get_event(site)
 
       assert response(conn, 202) == "ok"
       assert pageview.referrer == "facebook.com/page"
       assert pageview.referrer_source == "Facebook"
     end
 
-    test "ignores event when referrer is a spammer", %{conn: conn} do
+    test "ignores event when referrer is a spammer", %{conn: conn, site: site} do
       params = %{
-        domain: "ignore-spammers-test.com",
+        domain: site.domain,
         name: "pageview",
         url: "http://gigride.live/",
-        referrer: "https://www.1-best-seo.com",
-        screen_width: 1440
+        referrer: "https://www.1-best-seo.com"
       }
 
       conn =
@@ -262,16 +296,16 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
         |> post("/api/event", params)
 
       assert response(conn, 202) == "ok"
-      assert !get_event("ignore-spammers-test.com")
+      assert !get_event(site)
     end
 
-    test "feature flag - blocks traffic from a domain when block_traffic is enabled", %{
+    test "blocks traffic from a domain when it's blocked", %{
       conn: conn
     } do
-      FunWithFlags.enable(:block_event_ingest, for_actor: "feature-flag-test.com")
+      site = insert(:site, ingest_rate_limit_threshold: 0)
 
       params = %{
-        domain: "feature-flag-test.com",
+        domain: site.domain,
         name: "pageview",
         url: "https://feature-flag-test.com"
       }
@@ -282,15 +316,15 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
         |> post("/api/event", params)
 
       assert response(conn, 202) == "ok"
-      refute get_event("feature-flag-test.com")
+      refute get_event(site)
     end
 
-    test "ignores when referrer is internal", %{conn: conn} do
+    test "ignores when referrer is internal", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://gigride.live/",
         referrer: "https://gigride.live",
-        domain: "external-controller-test-9.com"
+        domain: site.domain
       }
 
       conn =
@@ -298,18 +332,18 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
         |> put_req_header("user-agent", @user_agent)
         |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-9.com")
+      pageview = get_event(site)
 
       assert response(conn, 202) == "ok"
       assert pageview.referrer_source == ""
     end
 
-    test "ignores localhost referrer", %{conn: conn} do
+    test "ignores localhost referrer", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://gigride.live/",
         referrer: "http://localhost:4000/",
-        domain: "external-controller-test-10.com"
+        domain: site.domain
       }
 
       conn =
@@ -317,18 +351,18 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
         |> put_req_header("user-agent", @user_agent)
         |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-10.com")
+      pageview = get_event(site)
 
       assert response(conn, 202) == "ok"
       assert pageview.referrer_source == ""
     end
 
-    test "parses subdomain referrer", %{conn: conn} do
+    test "parses subdomain referrer", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://gigride.live/",
         referrer: "https://blog.gigride.live",
-        domain: "external-controller-test-11.com"
+        domain: site.domain
       }
 
       conn =
@@ -336,68 +370,68 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
         |> put_req_header("user-agent", @user_agent)
         |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-11.com")
+      pageview = get_event(site)
 
       assert response(conn, 202) == "ok"
       assert pageview.referrer_source == "blog.gigride.live"
     end
 
-    test "referrer is cleaned", %{conn: conn} do
+    test "referrer is cleaned", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://www.example.com/",
         referrer: "https://www.indiehackers.com/page?query=param#hash",
-        domain: "external-controller-test-12.com"
+        domain: site.domain
       }
 
       conn
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-12.com")
+      pageview = get_event(site)
 
       assert pageview.referrer == "indiehackers.com/page"
     end
 
-    test "utm_source overrides referrer source", %{conn: conn} do
+    test "utm_source overrides referrer source", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://www.example.com/?utm_source=betalist",
         referrer: "https://betalist.com/my-produxct",
-        domain: "external-controller-test-13.com"
+        domain: site.domain
       }
 
       conn
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-13.com")
+      pageview = get_event(site)
 
       assert pageview.referrer_source == "betalist"
     end
 
-    test "utm tags are stored", %{conn: conn} do
+    test "utm tags are stored", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url:
           "http://www.example.com/?utm_medium=ads&utm_source=instagram&utm_campaign=video_story",
-        domain: "external-controller-test-utm-tags.com"
+        domain: site.domain
       }
 
       conn
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-utm-tags.com")
+      pageview = get_event(site)
 
       assert pageview.utm_medium == "ads"
       assert pageview.utm_source == "instagram"
       assert pageview.utm_campaign == "video_story"
     end
 
-    test "if it's an :unknown referrer, just the domain is used", %{conn: conn} do
+    test "if it's an :unknown referrer, just the domain is used", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://gigride.live/",
         referrer: "https://www.indiehackers.com/landing-page-feedback",
-        domain: "external-controller-test-14.com"
+        domain: site.domain
       }
 
       conn =
@@ -405,18 +439,18 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
         |> put_req_header("user-agent", @user_agent)
         |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-14.com")
+      pageview = get_event(site)
 
       assert response(conn, 202) == "ok"
       assert pageview.referrer_source == "indiehackers.com"
     end
 
-    test "if the referrer is not http or https, it is ignored", %{conn: conn} do
+    test "if the referrer is not http or https, it is ignored", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://gigride.live/",
         referrer: "android-app://com.google.android.gm",
-        domain: "external-controller-test-15.com"
+        domain: site.domain
       }
 
       conn =
@@ -424,54 +458,74 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
         |> put_req_header("user-agent", @user_agent)
         |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-15.com")
+      pageview = get_event(site)
 
       assert response(conn, 202) == "ok"
       assert pageview.referrer_source == ""
     end
 
-    test "screen size is calculated from screen_width", %{conn: conn} do
+    test "screen size is calculated from user agent", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://gigride.live/",
-        screen_width: 480,
-        domain: "external-controller-test-16.com"
+        domain: site.domain
       }
 
       conn =
         conn
-        |> put_req_header("user-agent", @user_agent)
+        |> put_req_header("user-agent", @user_agent_mobile)
         |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-16.com")
+      pageview = get_event(site)
 
       assert response(conn, 202) == "ok"
       assert pageview.screen_size == "Mobile"
     end
 
-    test "screen size is nil if screen_width is missing", %{conn: conn} do
+    test "screen size is nil if user agent is unknown", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://gigride.live/",
-        domain: "external-controller-test-17.com"
+        domain: site.domain
       }
 
       conn =
         conn
-        |> put_req_header("user-agent", @user_agent)
+        |> put_req_header("user-agent", "unknown UA")
         |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-17.com")
+      pageview = get_event(site)
 
       assert response(conn, 202) == "ok"
       assert pageview.screen_size == ""
     end
 
-    test "can trigger a custom event", %{conn: conn} do
+    test "screen size is calculated from user_agent when is tablet", %{conn: conn, site: site} do
       params = %{
-        name: "custom event",
+        name: "pageview",
         url: "http://gigride.live/",
-        domain: "external-controller-test-18.com"
+        domain: site.domain
+      }
+
+      conn =
+        conn
+        |> put_req_header("user-agent", @user_agent_tablet)
+        |> post("/api/event", params)
+
+      pageview = get_event(site)
+
+      assert response(conn, 202) == "ok"
+      assert pageview.screen_size == "Tablet"
+    end
+
+    test "screen size is calculated from user_agent when is desktop", %{
+      conn: conn,
+      site: site
+    } do
+      params = %{
+        name: "pageview",
+        url: "http://gigride.live/",
+        domain: site.domain
       }
 
       conn =
@@ -479,17 +533,35 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
         |> put_req_header("user-agent", @user_agent)
         |> post("/api/event", params)
 
-      event = get_event("external-controller-test-18.com")
+      pageview = get_event(site)
+
+      assert response(conn, 202) == "ok"
+      assert pageview.screen_size == "Desktop"
+    end
+
+    test "can trigger a custom event", %{conn: conn, site: site} do
+      params = %{
+        name: "custom event",
+        url: "http://gigride.live/",
+        domain: site.domain
+      }
+
+      conn =
+        conn
+        |> put_req_header("user-agent", @user_agent)
+        |> post("/api/event", params)
+
+      event = get_event(site)
 
       assert response(conn, 202) == "ok"
       assert event.name == "custom event"
     end
 
-    test "casts custom props to string", %{conn: conn} do
+    test "casts custom props to string", %{conn: conn, site: site} do
       params = %{
         name: "Signup",
         url: "http://gigride.live/",
-        domain: "custom-prop-test.com",
+        domain: site.domain,
         props: %{
           bool_test: true,
           number_test: 12
@@ -499,51 +571,51 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       conn
       |> post("/api/event", params)
 
-      event = get_event("custom-prop-test.com")
+      event = get_event(site)
 
       assert Map.get(event, :"meta.key") == ["bool_test", "number_test"]
       assert Map.get(event, :"meta.value") == ["true", "12"]
     end
 
-    test "ignores malformed custom props", %{conn: conn} do
+    test "ignores malformed custom props", %{conn: conn, site: site} do
       params = %{
         name: "Signup",
         url: "http://gigride.live/",
-        domain: "custom-prop-test-2.com",
+        domain: site.domain,
         props: "\"show-more:button\""
       }
 
       conn
       |> post("/api/event", params)
 
-      event = get_event("custom-prop-test-2.com")
+      event = get_event(site)
 
       assert Map.get(event, :"meta.key") == []
       assert Map.get(event, :"meta.value") == []
     end
 
-    test "can send props stringified", %{conn: conn} do
+    test "can send props stringified", %{conn: conn, site: site} do
       params = %{
         name: "Signup",
         url: "http://gigride.live/",
-        domain: "custom-prop-test-3.com",
+        domain: site.domain,
         props: Jason.encode!(%{number_test: 12})
       }
 
       conn
       |> post("/api/event", params)
 
-      event = get_event("custom-prop-test-3.com")
+      event = get_event(site)
 
       assert Map.get(event, :"meta.key") == ["number_test"]
       assert Map.get(event, :"meta.value") == ["12"]
     end
 
-    test "ignores custom prop with array value", %{conn: conn} do
+    test "ignores custom prop with array value", %{conn: conn, site: site} do
       params = %{
         name: "Signup",
         url: "http://gigride.live/",
-        domain: "custom-prop-test-4.com",
+        domain: site.domain,
         props: Jason.encode!(%{wat: ["some-thing"], other: "key"})
       }
 
@@ -551,17 +623,17 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
 
       assert conn.status == 202
 
-      event = get_event("custom-prop-test-4.com")
+      event = get_event(site)
 
       assert Map.get(event, :"meta.key") == ["other"]
       assert Map.get(event, :"meta.value") == ["key"]
     end
 
-    test "ignores custom prop with map value", %{conn: conn} do
+    test "ignores custom prop with map value", %{conn: conn, site: site} do
       params = %{
         name: "Signup",
         url: "http://gigride.live/",
-        domain: "custom-prop-test-5.com",
+        domain: site.domain,
         props: Jason.encode!(%{foo: %{bar: "baz"}, other_key: 1})
       }
 
@@ -569,17 +641,17 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
 
       assert conn.status == 202
 
-      event = get_event("custom-prop-test-5.com")
+      event = get_event(site)
 
       assert Map.get(event, :"meta.key") == ["other_key"]
       assert Map.get(event, :"meta.value") == ["1"]
     end
 
-    test "ignores custom prop with empty string value", %{conn: conn} do
+    test "ignores custom prop with empty string value", %{conn: conn, site: site} do
       params = %{
         name: "Signup",
         url: "http://gigride.live/",
-        domain: "custom-prop-test-empty-string-val.com",
+        domain: site.domain,
         props: Jason.encode!(%{foo: "", other_key: true})
       }
 
@@ -587,17 +659,17 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
 
       assert conn.status == 202
 
-      event = get_event("custom-prop-test-empty-string-val.com")
+      event = get_event(site)
 
       assert Map.get(event, :"meta.key") == ["other_key"]
       assert Map.get(event, :"meta.value") == ["true"]
     end
 
-    test "ignores custom prop with nil value", %{conn: conn} do
+    test "ignores custom prop with nil value", %{conn: conn, site: site} do
       params = %{
         name: "Signup",
         url: "http://gigride.live/",
-        domain: "custom-prop-test-nil.com",
+        domain: site.domain,
         props: Jason.encode!(%{foo: nil, other_key: true})
       }
 
@@ -605,18 +677,18 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
 
       assert conn.status == 202
 
-      event = get_event("custom-prop-test-nil.com")
+      event = get_event(site)
 
       assert Map.get(event, :"meta.key") == ["other_key"]
       assert Map.get(event, :"meta.value") == ["true"]
     end
 
-    test "ignores a malformed referrer URL", %{conn: conn} do
+    test "ignores a malformed referrer URL", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url: "http://gigride.live/",
         referrer: "https:://twitter.com",
-        domain: "external-controller-test-19.com"
+        domain: site.domain
       }
 
       conn =
@@ -624,36 +696,36 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
         |> put_req_header("user-agent", @user_agent)
         |> post("/api/event", params)
 
-      event = get_event("external-controller-test-19.com")
+      event = get_event(site)
 
       assert response(conn, 202) == "ok"
       assert event.referrer == ""
     end
 
-    # Fake data is set up in config/test.exs
-    test "looks up location data from the ip address", %{conn: conn} do
+    # Fake geo is loaded from test/priv/GeoLite2-City-Test.mmdb
+    test "looks up location data from the ip address", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
-        domain: "external-controller-test-20.com",
+        domain: site.domain,
         url: "http://gigride.live/"
       }
 
       conn
-      |> put_req_header("x-forwarded-for", "2.2.2.2")
+      |> put_req_header("x-forwarded-for", "2.125.160.216")
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-20.com")
+      pageview = get_event(site)
 
-      assert pageview.country_code == "FR"
-      assert pageview.subdivision1_code == "FR-IDF"
-      assert pageview.subdivision2_code == "FR-75"
-      assert pageview.city_geoname_id == 2_988_507
+      assert pageview.country_code == "GB"
+      assert pageview.subdivision1_code == "GB-ENG"
+      assert pageview.subdivision2_code == "GB-WBK"
+      assert pageview.city_geoname_id == 2_655_045
     end
 
-    test "ignores unknown country code ZZ", %{conn: conn} do
+    test "ignores unknown country code ZZ", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
-        domain: "external-controller-test-zz-country.com",
+        domain: site.domain,
         url: "http://gigride.live/"
       }
 
@@ -661,238 +733,284 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       |> put_req_header("x-forwarded-for", "0.0.0.0")
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-zz-country.com")
+      pageview = get_event(site)
 
       assert pageview.country_code == <<0, 0>>
+      assert pageview.subdivision1_code == ""
+      assert pageview.subdivision2_code == ""
+      assert pageview.city_geoname_id == 0
     end
 
-    test "scrubs port from x-forwarded-for", %{conn: conn} do
+    test "ignores disputed territory code XX", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
-        domain: "external-controller-test-x-forwarded-for-port.com",
+        domain: site.domain,
         url: "http://gigride.live/"
       }
 
       conn
-      |> put_req_header("x-forwarded-for", "1.1.1.1:123")
+      |> put_req_header("x-forwarded-for", "0.0.0.1")
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-x-forwarded-for-port.com")
+      pageview = get_event(site)
 
-      assert pageview.country_code == "US"
+      assert pageview.country_code == <<0, 0>>
+      assert pageview.subdivision1_code == ""
+      assert pageview.subdivision2_code == ""
+      assert pageview.city_geoname_id == 0
     end
 
-    test "works with ipv6 without port in x-forwarded-for", %{conn: conn} do
+    test "ignores TOR exit node country code T1", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
-        domain: "external-controller-test-x-forwarded-for-ipv6.com",
+        domain: site.domain,
         url: "http://gigride.live/"
       }
 
       conn
-      |> put_req_header("x-forwarded-for", "1:1:1:1:1:1:1:1")
+      |> put_req_header("x-forwarded-for", "0.0.0.2")
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-x-forwarded-for-ipv6.com")
+      pageview = get_event(site)
 
-      assert pageview.country_code == "US"
+      assert pageview.country_code == <<0, 0>>
+      assert pageview.subdivision1_code == ""
+      assert pageview.subdivision2_code == ""
+      assert pageview.city_geoname_id == 0
     end
 
-    test "works with ipv6 with a port number in x-forwarded-for", %{conn: conn} do
+    test "scrubs port from x-forwarded-for", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
-        domain: "external-controller-test-x-forwarded-for-ipv6-port.com",
+        domain: site.domain,
         url: "http://gigride.live/"
       }
 
       conn
-      |> put_req_header("x-forwarded-for", "[1:1:1:1:1:1:1:1]:123")
+      |> put_req_header("x-forwarded-for", "216.160.83.56:123")
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-x-forwarded-for-ipv6-port.com")
+      pageview = get_event(site)
 
       assert pageview.country_code == "US"
     end
 
-    test "uses cloudflare's special header for client IP address if present", %{conn: conn} do
+    test "works with ipv6 without port in x-forwarded-for", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
-        domain: "external-controller-test-cloudflare.com",
+        domain: site.domain,
+        url: "http://gigride.live/"
+      }
+
+      conn
+      |> put_req_header("x-forwarded-for", "2001:218:1:1:1:1:1:1")
+      |> post("/api/event", params)
+
+      pageview = get_event(site)
+
+      assert pageview.country_code == "JP"
+    end
+
+    test "works with ipv6 with a port number in x-forwarded-for", %{conn: conn, site: site} do
+      params = %{
+        name: "pageview",
+        domain: site.domain,
+        url: "http://gigride.live/"
+      }
+
+      conn
+      |> put_req_header("x-forwarded-for", "[2001:218:1:1:1:1:1:1]:123")
+      |> post("/api/event", params)
+
+      pageview = get_event(site)
+
+      assert pageview.country_code == "JP"
+    end
+
+    test "uses cloudflare's special header for client IP address if present", %{
+      conn: conn,
+      site: site
+    } do
+      params = %{
+        name: "pageview",
+        domain: site.domain,
         url: "http://gigride.live/"
       }
 
       conn
       |> put_req_header("x-forwarded-for", "0.0.0.0")
-      |> put_req_header("cf-connecting-ip", "1.1.1.1")
+      |> put_req_header("cf-connecting-ip", "216.160.83.56")
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-cloudflare.com")
+      pageview = get_event(site)
 
       assert pageview.country_code == "US"
     end
 
-    test "uses BunnyCDN's custom header for client IP address if present", %{conn: conn} do
+    test "uses BunnyCDN's custom header for client IP address if present", %{
+      conn: conn,
+      site: site
+    } do
       params = %{
         name: "pageview",
-        domain: "external-controller-test-bunny.com",
+        domain: site.domain,
         url: "http://gigride.live/"
       }
 
       conn
       |> put_req_header("x-forwarded-for", "0.0.0.0")
-      |> put_req_header("b-forwarded-for", "1.1.1.1,9.9.9.9")
+      |> put_req_header("b-forwarded-for", "216.160.83.56,9.9.9.9")
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-bunny.com")
+      pageview = get_event(site)
 
       assert pageview.country_code == "US"
     end
 
     test "Uses the Forwarded header when cf-connecting-ip and x-forwarded-for are missing", %{
-      conn: conn
+      conn: conn,
+      site: site
     } do
       params = %{
         name: "pageview",
-        domain: "external-controller-test-forwarded.com",
+        domain: site.domain,
         url: "http://gigride.live/"
       }
 
       conn
-      |> put_req_header("forwarded", "by=0.0.0.0;for=1.1.1.1;host=somehost.com;proto=https")
+      |> put_req_header("forwarded", "by=0.0.0.0;for=216.160.83.56;host=somehost.com;proto=https")
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-forwarded.com")
+      pageview = get_event(site)
 
       assert pageview.country_code == "US"
     end
 
-    test "Forwarded header can parse ipv6", %{conn: conn} do
+    test "Forwarded header can parse ipv6", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
-        domain: "external-controller-test-forwarded-ipv6.com",
+        domain: site.domain,
         url: "http://gigride.live/"
       }
 
       conn
       |> put_req_header(
         "forwarded",
-        "by=0.0.0.0;for=\"[1:1:1:1:1:1:1:1]\",for=0.0.0.0;host=somehost.com;proto=https"
+        "by=0.0.0.0;for=\"[2001:218:1:1:1:1:1:1]\",for=0.0.0.0;host=somehost.com;proto=https"
       )
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-forwarded-ipv6.com")
+      pageview = get_event(site)
 
-      assert pageview.country_code == "US"
+      assert pageview.country_code == "JP"
     end
 
-    test "URL is decoded", %{conn: conn} do
+    test "URL is decoded", %{conn: conn, site: site} do
       params = %{
         name: "pageview",
         url:
           "http://www.example.com/opportunity/category/%D8%AC%D9%88%D8%A7%D8%A6%D8%B2-%D9%88%D9%85%D8%B3%D8%A7%D8%A8%D9%82%D8%A7%D8%AA",
-        domain: "external-controller-test-21.com"
+        domain: site.domain
       }
 
       conn
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-21.com")
+      pageview = get_event(site)
 
       assert pageview.pathname == "/opportunity/category/جوائز-ومسابقات"
     end
 
-    test "accepts shorthand map keys", %{conn: conn} do
+    test "accepts shorthand map keys", %{conn: conn, site: site} do
       params = %{
         n: "pageview",
         u: "http://www.example.com/opportunity",
-        d: "external-controller-test-22.com",
-        r: "https://facebook.com/page",
-        w: 300
+        d: site.domain,
+        r: "https://facebook.com/page"
       }
 
       conn
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-22.com")
+      pageview = get_event(site)
 
       assert pageview.pathname == "/opportunity"
       assert pageview.referrer_source == "Facebook"
       assert pageview.referrer == "facebook.com/page"
-      assert pageview.screen_size == "Mobile"
     end
 
-    test "records hash when in hash mode", %{conn: conn} do
+    test "records hash when in hash mode", %{conn: conn, site: site} do
       params = %{
         n: "pageview",
         u: "http://www.example.com/#page-a",
-        d: "external-controller-test-23.com",
+        d: site.domain,
         h: 1
       }
 
       conn
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-23.com")
+      pageview = get_event(site)
 
       assert pageview.pathname == "/#page-a"
     end
 
-    test "does not record hash when hash mode is 0", %{conn: conn} do
+    test "does not record hash when hash mode is 0", %{conn: conn, site: site} do
       params = %{
         n: "pageview",
         u: "http://www.example.com/#page-a",
-        d: "external-controller-test-hash-0.com",
+        d: site.domain,
         h: 0
       }
 
       conn
       |> post("/api/event", params)
 
-      pageview = get_event("external-controller-test-hash-0.com")
+      pageview = get_event(site)
 
       assert pageview.pathname == "/"
     end
 
-    test "decodes URL pathname, fragment and search", %{conn: conn} do
+    test "decodes URL pathname, fragment and search", %{conn: conn, site: site} do
       params = %{
         n: "pageview",
         u:
           "https://test.com/%EF%BA%9D%EF%BB%AD%EF%BA%8E%EF%BA%8B%EF%BA%AF-%EF%BB%AE%EF%BB%A4%EF%BA%B3%EF%BA%8E%EF%BA%92%EF%BB%97%EF%BA%8E%EF%BA%97?utm_source=%25balle%25",
-        d: "url-decode-test.com",
+        d: site.domain,
         h: 1
       }
 
       conn
       |> post("/api/event", params)
 
-      pageview = get_event("url-decode-test.com")
+      pageview = get_event(site)
 
       assert pageview.hostname == "test.com"
       assert pageview.pathname == "/ﺝﻭﺎﺋﺯ-ﻮﻤﺳﺎﺒﻗﺎﺗ"
       assert pageview.utm_source == "%balle%"
     end
 
-    test "can use double quotes in query params", %{conn: conn} do
+    test "can use double quotes in query params", %{conn: conn, site: site} do
       q = URI.encode_query(%{"utm_source" => "Something \"quoted\""})
 
       params = %{
         n: "pageview",
         u: "https://test.com/?" <> q,
-        d: "quote-encode-test.com",
+        d: site.domain,
         h: 1
       }
 
       conn
       |> post("/api/event", params)
 
-      pageview = get_event("quote-encode-test.com")
+      pageview = get_event(site)
 
       assert pageview.utm_source == "Something \"quoted\""
     end
 
-    test "responds 400 when required fields are missing", %{conn: conn} do
+    test "responds 400 when required fields are missing", %{conn: conn, site: site} do
       params = %{
-        domain: "some-domain.com",
+        domain: site.domain,
         name: "pageview"
       }
 
@@ -903,7 +1021,7 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
 
       assert json_response(conn, 400) == %{
                "errors" => %{
-                 "hostname" => ["can't be blank"]
+                 "url" => ["is required"]
                }
              }
     end
@@ -922,19 +1040,25 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
 
       assert json_response(conn, 400) == %{
                "errors" => %{
-                 "domain" => ["can't be blank"],
-                 "hostname" => ["can't be blank"],
-                 "user_id" => ["can't be blank"]
+                 "domain" => ["can't be blank"]
                }
              }
     end
   end
 
   describe "user_id generation" do
-    test "with same IP address and user agent, the same user ID is generated", %{conn: conn} do
+    setup do
+      site = insert(:site)
+      {:ok, site: site}
+    end
+
+    test "with same IP address and user agent, the same user ID is generated", %{
+      conn: conn,
+      site: site
+    } do
       params = %{
         url: "https://user-id-test-domain.com/",
-        domain: "user-id-test-domain.com",
+        domain: site.domain,
         name: "pageview"
       }
 
@@ -948,15 +1072,15 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       |> put_req_header("x-forwarded-for", "127.0.0.1")
       |> post("/api/event", params)
 
-      [one, two] = get_events("user-id-test-domain.com")
+      [one, two] = get_events(site)
 
       assert one.user_id == two.user_id
     end
 
-    test "different IP address results in different user ID", %{conn: conn} do
+    test "different IP address results in different user ID", %{conn: conn, site: site} do
       params = %{
         url: "https://user-id-test-domain.com/",
-        domain: "user-id-test-domain-2.com",
+        domain: site.domain,
         name: "pageview"
       }
 
@@ -967,18 +1091,18 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
 
       conn
       |> put_req_header("user-agent", @user_agent)
-      |> put_req_header("x-forwarded-for", "982.32.12.1")
+      |> put_req_header("x-forwarded-for", "82.32.12.1")
       |> post("/api/event", params)
 
-      [one, two] = get_events("user-id-test-domain-2.com")
+      [one, two] = get_events(site)
 
       assert one.user_id != two.user_id
     end
 
-    test "different user agent results in different user ID", %{conn: conn} do
+    test "different user agent results in different user ID", %{conn: conn, site: site} do
       params = %{
         url: "https://user-id-test-domain.com/",
-        domain: "user-id-test-domain-3.com",
+        domain: site.domain,
         name: "pageview"
       }
 
@@ -992,15 +1116,17 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       |> put_req_header("x-forwarded-for", "127.0.0.1")
       |> post("/api/event", params)
 
-      [one, two] = get_events("user-id-test-domain-3.com")
+      [one, two] = get_events(site)
 
       assert one.user_id != two.user_id
     end
 
-    test "different domain value results in different user ID", %{conn: conn} do
+    test "different domain value results in different user ID", %{conn: conn, site: site1} do
+      site2 = insert(:site)
+
       params = %{
         url: "https://user-id-test-domain.com/",
-        domain: "user-id-test-domain-4.com",
+        domain: site1.domain,
         name: "pageview"
       }
 
@@ -1012,18 +1138,18 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       conn
       |> put_req_header("user-agent", @user_agent)
       |> put_req_header("x-forwarded-for", "127.0.0.1")
-      |> post("/api/event", Map.put(params, :domain, "other-domain.com"))
+      |> post("/api/event", Map.put(params, :domain, site2.domain))
 
-      one = get_event("user-id-test-domain-4.com")
-      two = get_event("other-domain.com")
+      one = get_event(site1)
+      two = get_event(site2)
 
       assert one.user_id != two.user_id
     end
 
-    test "different hostname results in different user ID", %{conn: conn} do
+    test "different hostname results in different user ID", %{conn: conn, site: site} do
       params = %{
         url: "https://user-id-test-domain.com/",
-        domain: "user-id-test-domain-5.com",
+        domain: site.domain,
         name: "pageview"
       }
 
@@ -1037,17 +1163,18 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       |> put_req_header("x-forwarded-for", "127.0.0.1")
       |> post("/api/event", Map.put(params, :url, "https://other-domain.com/"))
 
-      [one, two] = get_events("user-id-test-domain-5.com")
+      [one, two] = get_events(site)
 
       assert one.user_id != two.user_id
     end
 
     test "different hostname results in the same user ID when the root domain in the same", %{
-      conn: conn
+      conn: conn,
+      site: site
     } do
       params = %{
         url: "https://user-id-test-domain.com/",
-        domain: "user-id-test-domain-6.com",
+        domain: site.domain,
         name: "pageview"
       }
 
@@ -1061,53 +1188,103 @@ defmodule PlausibleWeb.Api.ExternalControllerTest do
       |> put_req_header("x-forwarded-for", "127.0.0.1")
       |> post("/api/event", Map.put(params, :url, "https://app.user-id-test-domain.com/"))
 
-      [one, two] = get_events("user-id-test-domain-6.com")
+      [one, two] = get_events(site)
 
       assert one.user_id == two.user_id
     end
   end
 
-  test "defaults hostname to (none) when missing", %{conn: conn} do
-    params = %{
-      domain: "url-with-hostname-missing.com",
-      name: "pageview",
-      url: "file:///android_asset/www/index.html"
-    }
+  describe "remaining" do
+    setup do
+      site = insert(:site)
+      {:ok, site: site}
+    end
 
-    conn =
-      conn
-      |> put_req_header("content-type", "text/plain")
-      |> post("/api/event", Jason.encode!(params))
+    test "defaults hostname to (none) when missing", %{conn: conn, site: site} do
+      params = %{
+        domain: site.domain,
+        name: "pageview",
+        url: "file:///android_asset/www/index.html"
+      }
 
-    pageview = get_event("url-with-hostname-missing.com")
+      conn =
+        conn
+        |> put_req_header("content-type", "text/plain")
+        |> post("/api/event", Jason.encode!(params))
 
-    assert response(conn, 202) == "ok"
-    assert pageview.hostname == "(none)"
-  end
+      pageview = get_event(site)
 
-  test "accepts chrome extension URLs", %{conn: conn} do
-    params = %{
-      domain: "chrome-extension-url.com",
-      name: "pageview",
-      url: "chrome-extension://liipgellkffekalgefpjolodblggkmjg/popup.html"
-    }
+      assert response(conn, 202) == "ok"
+      assert pageview.hostname == "(none)"
+    end
 
-    conn =
-      conn
-      |> put_req_header("content-type", "text/plain")
-      |> post("/api/event", Jason.encode!(params))
+    test "accepts chrome extension URLs", %{conn: conn, site: site} do
+      params = %{
+        domain: site.domain,
+        name: "pageview",
+        url: "chrome-extension://liipgellkffekalgefpjolodblggkmjg/popup.html"
+      }
 
-    pageview = get_event("chrome-extension-url.com")
+      conn =
+        conn
+        |> put_req_header("content-type", "text/plain")
+        |> post("/api/event", Jason.encode!(params))
 
-    assert response(conn, 202) == "ok"
-    assert pageview.hostname == "liipgellkffekalgefpjolodblggkmjg"
+      pageview = get_event(site)
+
+      assert response(conn, 202) == "ok"
+      assert pageview.hostname == "liipgellkffekalgefpjolodblggkmjg"
+    end
   end
 
   describe "GET /api/health" do
     test "returns 200 OK", %{conn: conn} do
       conn = get(conn, "/api/health")
 
-      assert conn.status == 200
+      assert payload = json_response(conn, 200)
+      assert payload["postgres"] == "ok"
+      assert payload["clickhouse"] == "ok"
+      assert payload["sites_cache"] == "ok"
+    end
+  end
+
+  defp get_event(site) do
+    Plausible.Event.WriteBuffer.flush()
+
+    if Plausible.v2?() do
+      ClickhouseRepo.one(
+        from(e in Plausible.ClickhouseEventV2,
+          where: e.site_id == ^site.id,
+          order_by: [desc: e.timestamp]
+        )
+      )
+    else
+      ClickhouseRepo.one(
+        from(e in Plausible.ClickhouseEvent,
+          where: e.domain == ^site.domain,
+          order_by: [desc: e.timestamp]
+        )
+      )
+    end
+  end
+
+  defp get_events(site) do
+    Plausible.Event.WriteBuffer.flush()
+
+    if Plausible.v2?() do
+      ClickhouseRepo.all(
+        from(e in Plausible.ClickhouseEventV2,
+          where: e.site_id == ^site.id,
+          order_by: [desc: e.timestamp]
+        )
+      )
+    else
+      ClickhouseRepo.all(
+        from(e in Plausible.ClickhouseEvent,
+          where: e.domain == ^site.domain,
+          order_by: [desc: e.timestamp]
+        )
+      )
     end
   end
 end

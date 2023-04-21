@@ -2,7 +2,7 @@ defmodule Plausible.Workers.SendSiteSetupEmailsTest do
   use Plausible.DataCase, async: true
   use Bamboo.Test
   use Oban.Testing, repo: Plausible.Repo
-  import Plausible.TestUtils
+
   alias Plausible.Workers.SendSiteSetupEmails
 
   describe "when user has not managed to set up the site" do
@@ -40,7 +40,10 @@ defmodule Plausible.Workers.SendSiteSetupEmailsTest do
   describe "when user has managed to set up their site" do
     test "sends the setup completed email as soon as possible" do
       user = insert(:user)
-      insert(:site, members: [user], domain: "test-site.com")
+
+      site = insert(:site, members: [user])
+
+      populate_stats(site, [build(:pageview)])
 
       perform_job(SendSiteSetupEmails, %{})
 
@@ -61,7 +64,7 @@ defmodule Plausible.Workers.SendSiteSetupEmailsTest do
         subject: "Your Plausible setup: Waiting for the first page views"
       )
 
-      create_pageviews([%{domain: site.domain}])
+      create_pageviews([%{site: site}])
       perform_job(SendSiteSetupEmails, %{})
 
       assert_email_delivered_with(

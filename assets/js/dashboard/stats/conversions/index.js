@@ -1,11 +1,14 @@
 import React from 'react';
 import { Link } from 'react-router-dom'
+import FlipMove from 'react-flip-move'
+
 
 import Bar from '../bar'
 import PropBreakdown from './prop-breakdown'
 import numberFormatter from '../../util/number-formatter'
 import * as api from '../../api'
 import * as url from '../../util/url'
+import { escapeFilterValue } from '../../util/filters'
 import LazyLoader from '../../components/lazy-loader'
 
 const MOBILE_UPPER_WIDTH = 767
@@ -20,7 +23,7 @@ export default class Conversions extends React.Component {
       viewport: DEFAULT_WIDTH,
     }
     this.onVisible = this.onVisible.bind(this)
-
+    this.fetchConversions = this.fetchConversions.bind(this)
     this.handleResize = this.handleResize.bind(this);
   }
 
@@ -31,6 +34,7 @@ export default class Conversions extends React.Component {
 
   componentWillUnmount() {
     window.removeEventListener('resize', this.handleResize, false);
+    document.removeEventListener('tick', this.fetchConversions)
   }
 
   handleResize() {
@@ -39,6 +43,9 @@ export default class Conversions extends React.Component {
 
   onVisible() {
     this.fetchConversions()
+    if (this.props.query.period === 'realtime') {
+      document.addEventListener('tick', this.fetchConversions)
+    }
   }
 
   componentDidUpdate(prevProps) {
@@ -73,7 +80,7 @@ export default class Conversions extends React.Component {
             maxWidthDeduction={this.getBarMaxWidth()}
             plot="unique_conversions"
           >
-            <Link to={url.setQuery('goal', goal.name)} className="block px-2 py-1.5 hover:underline relative z-9 break-all lg:truncate dark:text-gray-200">{goal.name}</Link>
+            <Link to={url.setQuery('goal', escapeFilterValue(goal.name))} className="block px-2 py-1.5 hover:underline relative z-9 break-all lg:truncate dark:text-gray-200">{goal.name}</Link>
           </Bar>
           <div className="dark:text-gray-200">
             <span className="inline-block w-20 font-medium text-right">{numberFormatter(goal.unique_conversions)}</span>
@@ -102,8 +109,9 @@ export default class Conversions extends React.Component {
               <span className="inline-block w-20">CR</span>
             </div>
           </div>
-
-          { this.state.goals.map(this.renderGoal.bind(this)) }
+          <FlipMove>
+            { this.state.goals.map(this.renderGoal.bind(this)) }
+          </FlipMove>
         </React.Fragment>
       )
     }

@@ -7,26 +7,35 @@ defmodule PlausibleWeb.AuthPlug do
   end
 
   def call(conn, _opts) do
-    case get_session(conn, :current_user_id) do
-      nil ->
-        conn
-
-      id ->
-        user =
-          Repo.get_by(Plausible.Auth.User, id: id)
-          |> Repo.preload(
-            subscription:
-              from(s in Plausible.Billing.Subscription, order_by: [desc: s.inserted_at])
-          )
-
-        is_super_admin = Plausible.Auth.is_super_admin?(id)
-
-        if user do
-          Sentry.Context.set_user_context(%{id: user.id, name: user.name, email: user.email})
-          merge_assigns(conn, current_user: user, is_super_admin: is_super_admin)
-        else
-          conn
-        end
+    with id when is_integer(id) <- get_session(conn, :current_user_id),
+         %Plausible.Auth.User{} = user <- find_user(id) do
+      Plausible.OpenTelemetry.add_user_attributes(user)
+      Sentry.Context.set_user_context(%{id: user.id, name: user.name, email: user.email})
+      is_super_admin = Plausible.Auth.is_super_admin?(id)
+      merge_assigns(conn, current_user: user, is_super_admin: is_super_admin)
+    else
+      nil -> conn
     end
+  end
+
+  defp find_user(user_id) do
+    last_subscription_query =
+      from(subscription in Plausible.Billing.Subscription,
+        where: subscription.user_id == ^user_id,
+        order_by: [desc: subscription.inserted_at],
+        limit: 1
+      )
+
+    user_query =
+      from(user in Plausible.Auth.User,
+        left_join: last_subscription in subquery(last_subscription_query),
+        on: last_subscription.user_id == user.id,
+        left_join: subscription in Plausible.Billing.Subscription,
+        on: subscription.id == last_subscription.id,
+        where: user.id == ^user_id,
+        preload: [subscription: subscription]
+      )
+
+    Repo.one(user_query)
   end
 end

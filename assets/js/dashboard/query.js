@@ -2,24 +2,31 @@ import React from 'react'
 import { Link, withRouter } from 'react-router-dom'
 import {formatDay, formatMonthYYYY, nowForSite, parseUTCDate} from './util/date'
 import * as storage from './util/storage'
+import { COMPARISON_DISABLED_PERIODS, getStoredComparisonMode, isComparisonEnabled } from './comparison-input'
 
 const PERIODS = ['realtime', 'day', 'month', '7d', '30d', '6mo', '12mo', 'year', 'all', 'custom']
 
 export function parseQuery(querystring, site) {
   const q = new URLSearchParams(querystring)
   let period = q.get('period')
-  const periodKey = `period__${  site.domain}`
+  const periodKey = `period__${site.domain}`
 
   if (PERIODS.includes(period)) {
     if (period !== 'custom' && period !== 'realtime') storage.setItem(periodKey, period)
   } else if (storage.getItem(periodKey)) {
-      period = storage.getItem(periodKey)
-    } else {
-      period = '30d'
-    }
+    period = storage.getItem(periodKey)
+  } else {
+    period = '30d'
+  }
+
+  let comparison = q.get('comparison') || getStoredComparisonMode(site.domain)
+  if (COMPARISON_DISABLED_PERIODS.includes(period) || !isComparisonEnabled(comparison)) comparison = null
 
   return {
     period,
+    comparison,
+    compare_from: q.get('compare_from'),
+    compare_to: q.get('compare_to'),
     date: q.get('date') ? parseUTCDate(q.get('date')) : nowForSite(site),
     from: q.get('from') ? parseUTCDate(q.get('from')) : undefined,
     to: q.get('to') ? parseUTCDate(q.get('to')) : undefined,
@@ -101,7 +108,7 @@ class QueryLink extends React.Component {
         to={{ pathname: window.location.pathname, search: generateQueryString(to) }}
         onClick={this.onClick}
       />
-)
+    )
   }
 }
 const QueryLinkWithRouter = withRouter(QueryLink)
@@ -153,29 +160,4 @@ export function eventName(query) {
     return 'events'
   }
   return 'pageviews'
-}
-
-export const formattedFilters = {
-  'goal': 'Goal',
-  'props': 'Property',
-  'prop_key': 'Property',
-  'prop_value': 'Value',
-  'source': 'Source',
-  'utm_medium': 'UTM Medium',
-  'utm_source': 'UTM Source',
-  'utm_campaign': 'UTM Campaign',
-  'utm_content': 'UTM Content',
-  'utm_term': 'UTM Term',
-  'referrer': 'Referrer URL',
-  'screen': 'Screen size',
-  'browser': 'Browser',
-  'browser_version': 'Browser Version',
-  'os': 'Operating System',
-  'os_version': 'Operating System Version',
-  'country': 'Country',
-  'region': 'Region',
-  'city': 'City',
-  'page': 'Page',
-  'entry_page': 'Entry Page',
-  'exit_page': 'Exit Page'
 }

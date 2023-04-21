@@ -1,6 +1,5 @@
 defmodule PlausibleWeb.Api.StatsController.CitiesTest do
   use PlausibleWeb.ConnCase
-  import Plausible.TestUtils
 
   describe "GET /api/stats/:domain/cities" do
     defp seed(%{site: site}) do
@@ -29,6 +28,21 @@ defmodule PlausibleWeb.Api.StatsController.CitiesTest do
       conn = get(conn, "/api/stats/#{site.domain}/cities?period=day&filters=#{filters}")
 
       assert json_response(conn, 200) == [
+               %{"code" => 591_632, "country_flag" => "🇪🇪", "name" => "Kärdla", "visitors" => 2}
+             ]
+    end
+
+    test "does not return missing cities from imported data", %{conn: conn, site: site} do
+      populate_stats(site, [
+        build(:imported_locations, country: "EE", region: "EE-37", city: 588_409),
+        build(:imported_locations, country: nil, region: nil, city: 0),
+        build(:imported_locations, country: nil, region: nil, city: nil)
+      ])
+
+      conn = get(conn, "/api/stats/#{site.domain}/cities?period=day&with_imported=true")
+
+      assert json_response(conn, 200) == [
+               %{"code" => 588_409, "country_flag" => "🇪🇪", "name" => "Tallinn", "visitors" => 4},
                %{"code" => 591_632, "country_flag" => "🇪🇪", "name" => "Kärdla", "visitors" => 2}
              ]
     end

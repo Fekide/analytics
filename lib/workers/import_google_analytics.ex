@@ -1,5 +1,6 @@
 defmodule Plausible.Workers.ImportGoogleAnalytics do
   use Plausible.Repo
+  require Logger
 
   use Oban.Worker,
     queue: :google_analytics_imports,
@@ -34,13 +35,14 @@ defmodule Plausible.Workers.ImportGoogleAnalytics do
         Enum.each(site.memberships, fn membership ->
           if membership.role in [:owner, :admin] do
             PlausibleWeb.Email.import_success(membership.user, site)
-            |> Plausible.Mailer.send_email_safe()
+            |> Plausible.Mailer.send()
           end
         end)
 
         :ok
 
       {:error, error} ->
+        Logger.error("Import: Failed to import from GA. Reason: #{inspect(error)}")
         import_failed(site)
 
         {:error, error}
@@ -62,7 +64,7 @@ defmodule Plausible.Workers.ImportGoogleAnalytics do
     Enum.each(site.memberships, fn membership ->
       if membership.role in [:owner, :admin] do
         PlausibleWeb.Email.import_failure(membership.user, site)
-        |> Plausible.Mailer.send_email_safe()
+        |> Plausible.Mailer.send()
       end
     end)
   end

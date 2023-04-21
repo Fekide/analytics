@@ -1,79 +1,268 @@
 defmodule Plausible.Ingestion.Event do
-  require OpenTelemetry.Tracer, as: Tracer
-  alias Plausible.Ingestion.{Request, CityOverrides}
-
-  @spec build_and_buffer(Request.t()) :: :ok | :skip | {:error, Ecto.Changeset.t()}
-  @doc """
-  Builds events from %Plausible.Ingestion.Request{} and adds them to Plausible.Event.WriteBuffer.
-  This function reads geolocation data and parses the user agent string. Returns :skip if the
-  request is identified as spam, or blocked.
+  @moduledoc """
+  This module exposes the `build_and_buffer/1` function capable of
+  turning %Plausible.Ingestion.Request{} into a series of events that in turn
+  are uniformly either buffered in batches (to Clickhouse) or dropped
+  (e.g. due to spam blocklist) from the processing pipeline.
   """
-  def build_and_buffer(%Request{} = request) do
-    with :ok <- spam_or_blocked?(request),
-         salts <- Plausible.Session.Salts.fetch(),
-         event <- Map.new(),
-         %{} = event <- put_user_agent(event, request),
-         %{} = event <- put_basic_info(event, request),
-         %{} = event <- put_referrer(event, request),
-         %{} = event <- put_geolocation(event, request),
-         %{} = event <- put_screen_size(event, request),
-         %{} = event <- put_props(event, request),
-         events when is_list(events) <- map_domains(event, request),
-         events when is_list(events) <- put_user_id(events, request, salts),
-         {:ok, events} <- validate_events(events),
-         events when is_list(events) <- register_session(events, request, salts) do
-      Enum.each(events, &Plausible.Event.WriteBuffer.insert/1)
+  alias Plausible.Ingestion.Request
+  alias Plausible.ClickhouseEvent
+  alias Plausible.ClickhouseEventV2
+  alias Plausible.Site.GateKeeper
+
+  defstruct domain: nil,
+            site_id: nil,
+            clickhouse_event_attrs: %{},
+            clickhouse_event: nil,
+            dropped?: false,
+            drop_reason: nil,
+            request: nil,
+            salts: nil,
+            changeset: nil
+
+  @type drop_reason() ::
+          :bot
+          | :spam_referrer
+          | GateKeeper.policy()
+          | :invalid
+
+  @type t() :: %__MODULE__{
+          domain: String.t() | nil,
+          site_id: pos_integer() | nil,
+          clickhouse_event_attrs: map(),
+          clickhouse_event: %ClickhouseEvent{} | %ClickhouseEventV2{} | nil,
+          dropped?: boolean(),
+          drop_reason: drop_reason(),
+          request: Request.t(),
+          salts: map(),
+          changeset: %Ecto.Changeset{}
+        }
+
+  @spec build_and_buffer(Request.t()) :: {:ok, %{buffered: [t()], dropped: [t()]}}
+  def build_and_buffer(%Request{domains: domains} = request) do
+    processed_events =
+      if spam_referrer?(request) do
+        for domain <- domains, do: drop(new(domain, request), :spam_referrer)
+      else
+        Enum.reduce(domains, [], fn domain, acc ->
+          case GateKeeper.check(domain) do
+            {:allow, site_id} ->
+              processed =
+                domain
+                |> new(site_id, request)
+                |> process_unless_dropped(pipeline())
+
+              [processed | acc]
+
+            {:deny, reason} ->
+              [drop(new(domain, request), reason) | acc]
+          end
+        end)
+      end
+
+    {dropped, buffered} = Enum.split_with(processed_events, & &1.dropped?)
+    {:ok, %{dropped: dropped, buffered: buffered}}
+  end
+
+  @spec telemetry_event_buffered() :: [atom()]
+  def telemetry_event_buffered() do
+    [:plausible, :ingest, :event, :buffered]
+  end
+
+  @spec telemetry_event_dropped() :: [atom()]
+  def telemetry_event_dropped() do
+    [:plausible, :ingest, :event, :dropped]
+  end
+
+  @spec emit_telemetry_buffered(t()) :: :ok
+  def emit_telemetry_buffered(event) do
+    :telemetry.execute(telemetry_event_buffered(), %{}, %{
+      domain: event.domain,
+      request_timestamp: event.request.timestamp
+    })
+  end
+
+  @spec emit_telemetry_dropped(t(), drop_reason()) :: :ok
+  def emit_telemetry_dropped(event, reason) do
+    :telemetry.execute(telemetry_event_dropped(), %{}, %{
+      domain: event.domain,
+      reason: reason,
+      request_timestamp: event.request.timestamp
+    })
+  end
+
+  defp pipeline() do
+    [
+      &put_user_agent/1,
+      &put_basic_info/1,
+      &put_referrer/1,
+      &put_utm_tags/1,
+      &put_geolocation/1,
+      &put_props/1,
+      &put_salts/1,
+      &put_user_id/1,
+      &validate_clickhouse_event/1,
+      &register_session/1,
+      &write_to_buffer/1
+    ]
+  end
+
+  defp process_unless_dropped(%__MODULE__{} = initial_event, pipeline) do
+    Enum.reduce_while(pipeline, initial_event, fn pipeline_step, acc_event ->
+      case pipeline_step.(acc_event) do
+        %__MODULE__{dropped?: true} = dropped -> {:halt, dropped}
+        %__MODULE__{dropped?: false} = event -> {:cont, event}
+      end
+    end)
+  end
+
+  defp new(domain, request) do
+    struct!(__MODULE__, domain: domain, request: request)
+  end
+
+  defp new(domain, site_id, request) do
+    struct!(__MODULE__, domain: domain, site_id: site_id, request: request)
+  end
+
+  defp drop(%__MODULE__{} = event, reason, attrs \\ []) do
+    fields =
+      attrs
+      |> Keyword.put(:dropped?, true)
+      |> Keyword.put(:drop_reason, reason)
+
+    emit_telemetry_dropped(event, reason)
+    struct!(event, fields)
+  end
+
+  defp update_attrs(%__MODULE__{} = event, %{} = attrs) do
+    struct!(event, clickhouse_event_attrs: Map.merge(event.clickhouse_event_attrs, attrs))
+  end
+
+  defp put_user_agent(%__MODULE__{} = event) do
+    case parse_user_agent(event.request) do
+      %UAInspector.Result{client: %UAInspector.Result.Client{name: "Headless Chrome"}} ->
+        drop(event, :bot)
+
+      %UAInspector.Result.Bot{} ->
+        drop(event, :bot)
+
+      %UAInspector.Result{} = user_agent ->
+        update_attrs(event, %{
+          operating_system: os_name(user_agent),
+          operating_system_version: os_version(user_agent),
+          browser: browser_name(user_agent),
+          browser_version: browser_version(user_agent),
+          screen_size: screen_size(user_agent)
+        })
+
+      _any ->
+        event
     end
   end
 
-  defp put_basic_info(%{} = event, %Request{} = request) do
-    uri = request.url && URI.parse(request.url)
-    host = if uri && uri.host == "", do: "(none)", else: uri && uri.host
+  defp put_basic_info(%__MODULE__{} = event) do
+    update_attrs(event, %{
+      domain: event.domain,
+      site_id: event.site_id,
+      timestamp: event.request.timestamp,
+      name: event.request.event_name,
+      hostname: event.request.hostname,
+      pathname: event.request.pathname
+    })
+  end
 
+  defp put_referrer(%__MODULE__{} = event) do
+    ref = parse_referrer(event.request.uri, event.request.referrer)
+
+    update_attrs(event, %{
+      referrer_source: get_referrer_source(event.request, ref),
+      referrer: clean_referrer(ref)
+    })
+  end
+
+  defp put_utm_tags(%__MODULE__{} = event) do
+    query_params = event.request.query_params
+
+    update_attrs(event, %{
+      utm_medium: query_params["utm_medium"],
+      utm_source: query_params["utm_source"],
+      utm_campaign: query_params["utm_campaign"],
+      utm_content: query_params["utm_content"],
+      utm_term: query_params["utm_term"]
+    })
+  end
+
+  defp put_geolocation(%__MODULE__{} = event) do
+    result = Plausible.Ingestion.Geolocation.lookup(event.request.remote_ip) || %{}
+
+    update_attrs(event, result)
+  end
+
+  defp put_props(%__MODULE__{request: %{props: %{} = props}} = event) do
+    update_attrs(event, %{
+      "meta.key": Map.keys(props),
+      "meta.value": Enum.map(props, fn {_, v} -> to_string(v) end)
+    })
+  end
+
+  defp put_props(%__MODULE__{} = event), do: event
+
+  defp put_salts(%__MODULE__{} = event) do
+    %{event | salts: Plausible.Session.Salts.fetch()}
+  end
+
+  defp put_user_id(%__MODULE__{} = event) do
+    update_attrs(event, %{
+      user_id:
+        generate_user_id(
+          event.request,
+          event.domain,
+          event.clickhouse_event_attrs.hostname,
+          event.salts.current
+        )
+    })
+  end
+
+  defp validate_clickhouse_event(%__MODULE__{} = event) do
+    clickhouse_event =
+      if Plausible.v2?() do
+        event
+        |> Map.fetch!(:clickhouse_event_attrs)
+        |> ClickhouseEventV2.new()
+      else
+        event
+        |> Map.fetch!(:clickhouse_event_attrs)
+        |> ClickhouseEvent.new()
+      end
+
+    case Ecto.Changeset.apply_action(clickhouse_event, nil) do
+      {:ok, valid_clickhouse_event} ->
+        %{event | clickhouse_event: valid_clickhouse_event}
+
+      {:error, changeset} ->
+        drop(event, :invalid, changeset: changeset)
+    end
+  end
+
+  defp register_session(%__MODULE__{} = event) do
+    previous_user_id =
+      generate_user_id(
+        event.request,
+        event.domain,
+        event.clickhouse_event.hostname,
+        event.salts.previous
+      )
+
+    session_id = Plausible.Session.CacheStore.on_event(event.clickhouse_event, previous_user_id)
+
+    clickhouse_event = Map.put(event.clickhouse_event, :session_id, session_id)
+    %{event | clickhouse_event: clickhouse_event}
+  end
+
+  defp write_to_buffer(%__MODULE__{clickhouse_event: clickhouse_event} = event) do
+    {:ok, _} = Plausible.Event.WriteBuffer.insert(clickhouse_event)
+    emit_telemetry_buffered(event)
     event
-    |> Map.put(:timestamp, NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second))
-    |> Map.put(:name, request.event_name)
-    |> Map.put(:hostname, strip_www(host))
-    |> Map.put(:pathname, get_pathname(uri, request.hash_mode))
-  end
-
-  defp get_pathname(_uri = nil, _hash_mode), do: "/"
-
-  defp get_pathname(uri, hash_mode) do
-    pathname =
-      (uri.path || "/")
-      |> URI.decode()
-      |> String.trim_trailing()
-
-    if hash_mode == 1 && uri.fragment do
-      pathname <> "#" <> URI.decode(uri.fragment)
-    else
-      pathname
-    end
-  end
-
-  defp put_props(%{} = event, %Request{} = request) do
-    if is_map(request.props) do
-      event
-      |> Map.put(:"meta.key", Map.keys(request.props))
-      |> Map.put(:"meta.value", Map.values(request.props) |> Enum.map(&to_string/1))
-    else
-      event
-    end
-  end
-
-  defp put_referrer(%{} = event, %Request{} = request) do
-    uri = request.url && URI.parse(request.url)
-    ref = parse_referrer(uri, request.referrer)
-
-    event
-    |> Map.put(:utm_medium, request.query_params["utm_medium"])
-    |> Map.put(:utm_source, request.query_params["utm_source"])
-    |> Map.put(:utm_campaign, request.query_params["utm_campaign"])
-    |> Map.put(:utm_content, request.query_params["utm_content"])
-    |> Map.put(:utm_term, request.query_params["utm_term"])
-    |> Map.put(:referrer_source, get_referrer_source(request, ref))
-    |> Map.put(:referrer, clean_referrer(ref))
   end
 
   defp parse_referrer(_uri, _referrer_str = nil), do: nil
@@ -81,7 +270,8 @@ defmodule Plausible.Ingestion.Event do
   defp parse_referrer(uri, referrer_str) do
     referrer_uri = URI.parse(referrer_str)
 
-    if strip_www(referrer_uri.host) !== strip_www(uri.host) && referrer_uri.host !== "localhost" do
+    if Request.sanitize_hostname(referrer_uri.host) !== Request.sanitize_hostname(uri.host) &&
+         referrer_uri.host !== "localhost" do
       RefInspector.parse(referrer_str)
     end
   end
@@ -107,33 +297,11 @@ defmodule Plausible.Ingestion.Event do
     end
   end
 
-  defp put_user_agent(%{} = event, %Request{} = request) do
-    case parse_user_agent(request) do
-      %UAInspector.Result{client: %UAInspector.Result.Client{name: "Headless Chrome"}} ->
-        :skip
-
-      %UAInspector.Result.Bot{} ->
-        :skip
-
-      %UAInspector.Result{} = user_agent ->
-        event
-        |> Map.put(:operating_system, os_name(user_agent))
-        |> Map.put(:operating_system_version, os_version(user_agent))
-        |> Map.put(:browser, browser_name(user_agent))
-        |> Map.put(:browser_version, browser_version(user_agent))
-
-      _any ->
-        event
-    end
-  end
-
   defp parse_user_agent(%Request{user_agent: user_agent}) when is_binary(user_agent) do
-    Tracer.with_span "parse_user_agent" do
-      case Cachex.fetch(:user_agents, user_agent, &UAInspector.parse/1) do
-        {:ok, user_agent} -> user_agent
-        {:commit, user_agent} -> user_agent
-        _ -> nil
-      end
+    case Cachex.fetch(:user_agents, user_agent, &UAInspector.parse/1) do
+      {:ok, user_agent} -> user_agent
+      {:commit, user_agent} -> user_agent
+      _ -> nil
     end
   end
 
@@ -154,6 +322,41 @@ defmodule Plausible.Ingestion.Event do
       %UAInspector.Result.Client{name: "Chrome Webview"} -> "Mobile App"
       %UAInspector.Result.Client{type: "mobile app"} -> "Mobile App"
       client -> client.name
+    end
+  end
+
+  @mobile_types [
+    "smartphone",
+    "feature phone",
+    "portable media player",
+    "phablet",
+    "wearable",
+    "camera"
+  ]
+  @tablet_types ["car browser", "tablet"]
+  @desktop_types ["tv", "console", "desktop"]
+  alias UAInspector.Result.Device
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
+  defp screen_size(ua) do
+    case ua.device do
+      %Device{type: t} when t in @mobile_types ->
+        "Mobile"
+
+      %Device{type: t} when t in @tablet_types ->
+        "Tablet"
+
+      %Device{type: t} when t in @desktop_types ->
+        "Desktop"
+
+      %Device{type: type} ->
+        Sentry.capture_message("Could not determine device type from UAInspector",
+          extra: %{type: type}
+        )
+
+        nil
+
+      _ ->
+        nil
     end
   end
 
@@ -192,93 +395,6 @@ defmodule Plausible.Ingestion.Event do
     end
   end
 
-  defp put_screen_size(%{} = event, %Request{} = request) do
-    screen_width =
-      case request.screen_width do
-        nil -> nil
-        width when width < 576 -> "Mobile"
-        width when width < 992 -> "Tablet"
-        width when width < 1440 -> "Laptop"
-        width when width >= 1440 -> "Desktop"
-      end
-
-    Map.put(event, :screen_size, screen_width)
-  end
-
-  defp put_geolocation(%{} = event, %Request{} = request) do
-    Tracer.with_span "parse_visitor_location" do
-      result = Geolix.lookup(request.remote_ip, where: :geolocation)
-
-      country_code =
-        get_in(result, [:country, :iso_code])
-        |> ignore_unknown_country()
-
-      city_geoname_id = get_in(result, [:city, :geoname_id])
-      city_geoname_id = Map.get(CityOverrides.get(), city_geoname_id, city_geoname_id)
-
-      subdivision1_code =
-        case result do
-          %{subdivisions: [%{iso_code: iso_code} | _rest]} ->
-            country_code <> "-" <> iso_code
-
-          _ ->
-            ""
-        end
-
-      subdivision2_code =
-        case result do
-          %{subdivisions: [_first, %{iso_code: iso_code} | _rest]} ->
-            country_code <> "-" <> iso_code
-
-          _ ->
-            ""
-        end
-
-      event
-      |> Map.put(:country_code, country_code)
-      |> Map.put(:subdivision1_code, subdivision1_code)
-      |> Map.put(:subdivision2_code, subdivision2_code)
-      |> Map.put(:city_geoname_id, city_geoname_id)
-    end
-  end
-
-  defp ignore_unknown_country("ZZ"), do: nil
-  defp ignore_unknown_country(country), do: country
-
-  defp map_domains(%{} = event, %Request{} = request) do
-    domains =
-      if request.domain do
-        String.split(request.domain, ",")
-        |> Enum.map(&String.trim/1)
-        |> Enum.map(&strip_www/1)
-      else
-        uri = request.url && URI.parse(request.url)
-        [strip_www(uri && uri.host)]
-      end
-
-    for domain <- domains, do: Map.put(event, :domain, domain)
-  end
-
-  defp put_user_id(events, %Request{} = request, salts) do
-    for %{} = event <- events do
-      user_id = generate_user_id(request, event.domain, event.hostname, salts.current)
-      Map.put(event, :user_id, user_id)
-    end
-  end
-
-  defp register_session(events, %Request{} = request, salts) do
-    for %Plausible.ClickhouseEvent{} = event <- events do
-      previous_user_id = generate_user_id(request, event.domain, event.hostname, salts.previous)
-
-      session_id =
-        Tracer.with_span "cache_store_event" do
-          Plausible.Session.CacheStore.on_event(event, previous_user_id)
-        end
-
-      Map.put(event, :session_id, session_id)
-    end
-  end
-
   defp generate_user_id(request, domain, hostname, salt) do
     cond do
       is_nil(salt) ->
@@ -304,41 +420,11 @@ defmodule Plausible.Ingestion.Event do
     end
   end
 
-  defp spam_or_blocked?(%Request{} = request) do
-    cond do
-      request.domain in Application.get_env(:plausible, :domain_blacklist) ->
-        :skip
-
-      FunWithFlags.enabled?(:block_event_ingest, for: request.domain) ->
-        Tracer.set_attribute("blocked_by_flag", true)
-        :skip
-
-      request.referrer &&
-          URI.parse(request.referrer).host |> strip_www() |> ReferrerBlocklist.is_spammer?() ->
-        :skip
-
-      true ->
-        :ok
-    end
+  defp spam_referrer?(%Request{referrer: referrer}) when is_binary(referrer) do
+    URI.parse(referrer).host
+    |> Request.sanitize_hostname()
+    |> ReferrerBlocklist.is_spammer?()
   end
 
-  defp validate_events(events) do
-    Enum.reduce_while(events, {:ok, []}, fn %{} = attrs, {:ok, acc} ->
-      attrs
-      |> Plausible.ClickhouseEvent.new()
-      |> Ecto.Changeset.apply_action(nil)
-      |> case do
-        {:ok, event} -> {:cont, {:ok, [event | acc]}}
-        {:error, changeset} -> {:halt, {:error, changeset}}
-      end
-    end)
-  end
-
-  defp strip_www(hostname) do
-    if hostname do
-      String.replace_prefix(hostname, "www.", "")
-    else
-      nil
-    end
-  end
+  defp spam_referrer?(_), do: false
 end

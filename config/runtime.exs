@@ -1,5 +1,6 @@
 import Config
 import Plausible.ConfigHelpers
+require Logger
 
 if config_env() in [:dev, :test] do
   Envy.load(["config/.env.#{config_env()}"])
@@ -58,9 +59,6 @@ db_url =
 
 db_socket_dir = get_var_from_path_or_env(config_dir, "DATABASE_SOCKET_DIR")
 
-admin_user = get_var_from_path_or_env(config_dir, "ADMIN_USER_NAME")
-admin_email = get_var_from_path_or_env(config_dir, "ADMIN_USER_EMAIL")
-
 super_admin_user_ids =
   get_var_from_path_or_env(config_dir, "ADMIN_USER_IDS", "")
   |> String.split(",")
@@ -71,7 +69,6 @@ super_admin_user_ids =
   end)
   |> Enum.filter(& &1)
 
-admin_pwd = get_var_from_path_or_env(config_dir, "ADMIN_USER_PWD")
 env = get_var_from_path_or_env(config_dir, "ENVIRONMENT", "prod")
 mailer_adapter = get_var_from_path_or_env(config_dir, "MAILER_ADAPTER", "Bamboo.SMTPAdapter")
 mailer_email = get_var_from_path_or_env(config_dir, "MAILER_EMAIL", "hello@plausible.local")
@@ -84,6 +81,14 @@ ch_db_url =
     "http://plausible_events_db:8123/plausible_events_db"
   )
 
+{ingest_pool_size, ""} =
+  get_var_from_path_or_env(
+    config_dir,
+    "CLICKHOUSE_INGEST_POOL_SIZE",
+    "5"
+  )
+  |> Integer.parse()
+
 {ch_flush_interval_ms, ""} =
   config_dir
   |> get_var_from_path_or_env("CLICKHOUSE_FLUSH_INTERVAL_MS", "5000")
@@ -94,7 +99,41 @@ ch_db_url =
   |> get_var_from_path_or_env("CLICKHOUSE_MAX_BUFFER_SIZE", "10000")
   |> Integer.parse()
 
+v2_migration_done = get_var_from_path_or_env(config_dir, "V2_MIGRATION_DONE")
+
 ### Mandatory params End
+
+build_metadata_raw = get_var_from_path_or_env(config_dir, "BUILD_METADATA", "{}")
+
+build_metadata =
+  case Jason.decode(build_metadata_raw) do
+    {:ok, build_metadata} ->
+      build_metadata
+
+    {:error, error} ->
+      error = Exception.format(:error, error)
+
+      Logger.warn("""
+      failed to parse $BUILD_METADATA: #{error}
+
+          $BUILD_METADATA is set to #{build_metadata_raw}\
+      """)
+
+      Logger.warn("falling back to empty build metadata, as if $BUILD_METADATA was set to {}")
+
+      _fallback = %{}
+  end
+
+runtime_metadata = [
+  version: get_in(build_metadata, ["labels", "org.opencontainers.image.version"]),
+  commit: get_in(build_metadata, ["labels", "org.opencontainers.image.revision"]),
+  created: get_in(build_metadata, ["labels", "org.opencontainers.image.created"]),
+  tags: get_in(build_metadata, ["tags"])
+]
+
+config :plausible, :runtime_metadata, runtime_metadata
+
+config :plausible, :v2_migration_done, v2_migration_done
 
 sentry_dsn = get_var_from_path_or_env(config_dir, "SENTRY_DSN")
 honeycomb_api_key = get_var_from_path_or_env(config_dir, "HONEYCOMB_API_KEY")
@@ -114,16 +153,18 @@ geolite2_country_db =
   get_var_from_path_or_env(
     config_dir,
     "GEOLITE2_COUNTRY_DB",
-    Application.app_dir(:plausible, "/priv/geodb/dbip-country.mmdb")
+    Application.app_dir(:plausible, "/priv/geodb/dbip-country.mmdb.gz")
   )
 
 ip_geolocation_db = get_var_from_path_or_env(config_dir, "IP_GEOLOCATION_DB", geolite2_country_db)
 geonames_source_file = get_var_from_path_or_env(config_dir, "GEONAMES_SOURCE_FILE")
+maxmind_license_key = get_var_from_path_or_env(config_dir, "MAXMIND_LICENSE_KEY")
+maxmind_edition = get_var_from_path_or_env(config_dir, "MAXMIND_EDITION", "GeoLite2-City")
 
-disable_auth =
-  config_dir
-  |> get_var_from_path_or_env("DISABLE_AUTH", "false")
-  |> String.to_existing_atom()
+if System.get_env("DISABLE_AUTH") do
+  require Logger
+  Logger.warn("DISABLE_AUTH env var is no longer supported")
+end
 
 enable_email_verification =
   config_dir
@@ -156,11 +197,6 @@ log_level =
   config_dir
   |> get_var_from_path_or_env("LOG_LEVEL", "warn")
   |> String.to_existing_atom()
-
-domain_blacklist =
-  config_dir
-  |> get_var_from_path_or_env("DOMAIN_BLACKLIST", "")
-  |> String.split(",")
 
 is_selfhost =
   config_dir
@@ -203,9 +239,6 @@ user_agent_cache_stats =
   |> Integer.parse()
 
 config :plausible,
-  admin_user: admin_user,
-  admin_email: admin_email,
-  admin_pwd: admin_pwd,
   environment: env,
   mailer_email: mailer_email,
   super_admin_user_ids: super_admin_user_ids,
@@ -213,32 +246,34 @@ config :plausible,
   site_limit_exempt: site_limit_exempt,
   is_selfhost: is_selfhost,
   custom_script_name: custom_script_name,
-  domain_blacklist: domain_blacklist,
   load_locations_timeout: load_locations_timeout
 
 # Could not get this nested directly, so now interpretation is put here
 disable_registration =
   cond do
-    disable_auth or only_invitation_registration -> true
+    only_invitation_registration -> true
     true -> disable_registration
   end
 
 disable_invitation_registration =
   cond do
-    disable_auth -> true
     disable_registration and !only_invitation_registration -> true
     true -> disable_invitation_registration
   end
 
 config :plausible, :selfhost,
-  disable_authentication: disable_auth,
   enable_email_verification: enable_email_verification,
   disable_registration: disable_registration,
   disable_invitation_registration: disable_invitation_registration
 
 config :plausible, PlausibleWeb.Endpoint,
   url: [scheme: base_url.scheme, host: base_url.host, path: base_url.path, port: base_url.port],
-  http: [port: port, ip: listen_ip, transport_options: [max_connections: :infinity]],
+  http: [
+    port: port,
+    ip: listen_ip,
+    transport_options: [max_connections: :infinity],
+    protocol_options: [max_request_line_length: 8192, max_header_value_length: 8192]
+  ],
   secret_key_base: secret_key_base
 
 maybe_ipv6 = if System.get_env("ECTO_IPV6"), do: [:inet6], else: []
@@ -254,13 +289,14 @@ else
 end
 
 included_environments = if sentry_dsn, do: ["prod", "staging", "dev"], else: []
+sentry_app_version = runtime_metadata[:version] || app_version
 
 config :sentry,
   dsn: sentry_dsn,
   environment_name: env,
   included_environments: included_environments,
-  release: app_version,
-  tags: %{app_version: app_version},
+  release: sentry_app_version,
+  tags: %{app_version: sentry_app_version},
   enable_source_code_context: true,
   root_source_code_path: [File.cwd!()],
   client: Plausible.Sentry.Client,
@@ -283,24 +319,80 @@ config :plausible, :google,
   reporting_api_url: "https://analyticsreporting.googleapis.com",
   max_buffer_size: get_int_from_path_or_env(config_dir, "GOOGLE_MAX_BUFFER_SIZE", 10_000)
 
+ch_transport_opts = [
+  keepalive: true,
+  show_econnreset: true
+]
+
 config :plausible, Plausible.ClickhouseRepo,
   loggers: [Ecto.LogEntry],
   queue_target: 500,
   queue_interval: 2000,
   url: ch_db_url,
+  transport_opts: ch_transport_opts,
+  settings: [
+    readonly: 1
+  ]
+
+config :plausible, Plausible.IngestRepo,
+  loggers: [Ecto.LogEntry],
+  queue_target: 500,
+  queue_interval: 2000,
+  url: ch_db_url,
+  transport_opts: ch_transport_opts,
   flush_interval_ms: ch_flush_interval_ms,
-  max_buffer_size: ch_max_buffer_size
+  max_buffer_size: ch_max_buffer_size,
+  pool_size: ingest_pool_size
+
+config :plausible, Plausible.AsyncInsertRepo,
+  loggers: [Ecto.LogEntry],
+  queue_target: 500,
+  queue_interval: 2000,
+  url: ch_db_url,
+  transport_opts: ch_transport_opts,
+  pool_size: 1,
+  settings: [
+    async_insert: 1,
+    wait_for_async_insert: 0
+  ]
+
+config :plausible, Plausible.ImportDeletionRepo,
+  loggers: [Ecto.LogEntry],
+  queue_target: 500,
+  queue_interval: 2000,
+  url: ch_db_url,
+  transport_opts: ch_transport_opts,
+  pool_size: 1
 
 case mailer_adapter do
   "Bamboo.PostmarkAdapter" ->
     config :plausible, Plausible.Mailer,
-      adapter: :"Elixir.#{mailer_adapter}",
+      adapter: Bamboo.PostmarkAdapter,
       request_options: [recv_timeout: 10_000],
       api_key: get_var_from_path_or_env(config_dir, "POSTMARK_API_KEY")
 
+  "Bamboo.MailgunAdapter" ->
+    config :plausible, Plausible.Mailer,
+      adapter: Bamboo.MailgunAdapter,
+      hackney_opts: [recv_timeout: :timer.seconds(10)],
+      api_key: get_var_from_path_or_env(config_dir, "MAILGUN_API_KEY"),
+      domain: get_var_from_path_or_env(config_dir, "MAILGUN_DOMAIN")
+
+  "Bamboo.MandrillAdapter" ->
+    config :plausible, Plausible.Mailer,
+      adapter: Bamboo.MandrillAdapter,
+      hackney_opts: [recv_timeout: :timer.seconds(10)],
+      api_key: get_var_from_path_or_env(config_dir, "MANDRILL_API_KEY")
+
+  "Bamboo.SendGridAdapter" ->
+    config :plausible, Plausible.Mailer,
+      adapter: Bamboo.SendGridAdapter,
+      hackney_opts: [recv_timeout: :timer.seconds(10)],
+      api_key: get_var_from_path_or_env(config_dir, "SENDGRID_API_KEY")
+
   "Bamboo.SMTPAdapter" ->
     config :plausible, Plausible.Mailer,
-      adapter: :"Elixir.#{mailer_adapter}",
+      adapter: Bamboo.SMTPAdapter,
       server: get_var_from_path_or_env(config_dir, "SMTP_HOST_ADDR", "mail"),
       hostname: base_url.host,
       port: get_var_from_path_or_env(config_dir, "SMTP_HOST_PORT", "25"),
@@ -319,19 +411,18 @@ case mailer_adapter do
     config :plausible, Plausible.Mailer, adapter: Bamboo.TestAdapter
 
   _ ->
-    raise "Unknown mailer_adapter; expected SMTPAdapter or PostmarkAdapter"
-end
+    raise ArgumentError, """
+    Unknown mailer_adapter: #{inspect(mailer_adapter)}
 
-config :plausible, PlausibleWeb.Firewall,
-  blocklist:
-    get_var_from_path_or_env(config_dir, "IP_BLOCKLIST", "")
-    |> String.split(",")
-    |> Enum.map(&String.trim/1)
+    Please see https://hexdocs.pm/bamboo/readme.html#available-adapters
+    for the list of available adapters that ship with Bamboo
+    """
+end
 
 base_cron = [
   # Daily at midnight
   {"0 0 * * *", Plausible.Workers.RotateSalts},
-  #  hourly
+  # hourly
   {"0 * * * *", Plausible.Workers.ScheduleEmailReports},
   # hourly
   {"0 * * * *", Plausible.Workers.SendSiteSetupEmails},
@@ -342,7 +433,9 @@ base_cron = [
   # Every day at midnight
   {"0 0 * * *", Plausible.Workers.CleanEmailVerificationCodes},
   # Every day at 1am
-  {"0 1 * * *", Plausible.Workers.CleanInvitations}
+  {"0 1 * * *", Plausible.Workers.CleanInvitations},
+  # Every 2 hours
+  {"0 */2 * * *", Plausible.Workers.ExpireDomainChangeTransitions}
 ]
 
 cloud_cron = [
@@ -367,7 +460,8 @@ base_queues = [
   site_setup_emails: 1,
   clean_email_verification_codes: 1,
   clean_invitations: 1,
-  google_analytics_imports: 1
+  google_analytics_imports: 1,
+  domain_change_transition: 1
 ]
 
 cloud_queues = [
@@ -450,17 +544,38 @@ config :kaffy,
     ]
   ]
 
-if config_env() != :test do
-  config :geolix,
-    databases: [
-      %{
-        id: :geolocation,
-        adapter: Geolix.Adapter.MMDB2,
-        source: ip_geolocation_db,
-        result_as: :raw
-      }
-    ]
-end
+geo_opts =
+  cond do
+    maxmind_license_key ->
+      [
+        license_key: maxmind_license_key,
+        edition: maxmind_edition,
+        async: true
+      ]
+
+    ip_geolocation_db ->
+      [path: ip_geolocation_db]
+
+    true ->
+      raise """
+      Missing geolocation database configuration.
+
+      Please set the IP_GEOLOCATION_DB environment value to the location of
+      your IP geolocation .mmdb file:
+
+          IP_GEOLOCATION_DB=/etc/plausible/dbip-city.mmdb
+
+      Or authenticate with MaxMind by
+      configuring MAXMIND_LICENSE_KEY and (optionally) MAXMIND_EDITION environment
+      variables:
+
+          MAXMIND_LICENSE_KEY=LNpsJCCKPis6XvBP
+          MAXMIND_EDITION=GeoLite2-City # this is the default edition
+
+      """
+  end
+
+config :plausible, Plausible.Geo, geo_opts
 
 if geonames_source_file do
   config :location, :geonames_source_file, geonames_source_file
@@ -471,23 +586,23 @@ config :logger,
   backends: [:console]
 
 if honeycomb_api_key && honeycomb_dataset do
-  sample_rate = if env == "prod", do: 0.01, else: 1.0
-
   config :opentelemetry,
-    sampler: {:parent_based, %{root: {:trace_id_ratio_based, sample_rate}}},
-    resource: [service: %{name: "plausible"}],
+    resource: Plausible.OpenTelemetry.resource_attributes(runtime_metadata),
+    sampler: {Plausible.OpenTelemetry.Sampler, nil},
     span_processor: :batch,
-    exporter: :otlp
+    traces_exporter: :otlp
 
   config :opentelemetry_exporter,
     otlp_protocol: :grpc,
-    otlp_endpoint: 'https://api.honeycomb.io:443',
+    otlp_endpoint: "https://api.honeycomb.io:443",
     otlp_headers: [
       {"x-honeycomb-team", honeycomb_api_key},
       {"x-honeycomb-dataset", honeycomb_dataset}
     ]
 else
-  config :opentelemetry, sampler: {:parent_based, %{root: {:trace_id_ratio_based, 0.0}}}
+  config :opentelemetry,
+    sampler: :always_off,
+    traces_exporter: :none
 end
 
 config :tzdata,

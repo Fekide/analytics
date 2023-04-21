@@ -1,6 +1,5 @@
 defmodule PlausibleWeb.Api.StatsController.OperatingSystemsTest do
   use PlausibleWeb.ConnCase
-  import Plausible.TestUtils
 
   describe "GET /api/stats/:domain/operating_systems" do
     setup [:create_user, :log_in, :create_new_site, :add_imported_data]
@@ -17,6 +16,33 @@ defmodule PlausibleWeb.Api.StatsController.OperatingSystemsTest do
       assert json_response(conn, 200) == [
                %{"name" => "Mac", "visitors" => 2, "percentage" => 67},
                %{"name" => "Android", "visitors" => 1, "percentage" => 33}
+             ]
+    end
+
+    test "returns (not set) when appropriate", %{conn: conn, site: site} do
+      populate_stats(site, [
+        build(:pageview,
+          operating_system: ""
+        ),
+        build(:pageview,
+          operating_system: "Linux"
+        )
+      ])
+
+      conn = get(conn, "/api/stats/#{site.domain}/operating-systems?period=day")
+
+      assert json_response(conn, 200) == [
+               %{"name" => "(not set)", "visitors" => 1, "percentage" => 50},
+               %{"name" => "Linux", "visitors" => 1, "percentage" => 50}
+             ]
+
+      filters = Jason.encode!(%{os: "(not set)"})
+
+      conn =
+        get(conn, "/api/stats/#{site.domain}/operating-systems?period=day&filters=#{filters}")
+
+      assert json_response(conn, 200) == [
+               %{"name" => "(not set)", "visitors" => 1, "percentage" => 100}
              ]
     end
 

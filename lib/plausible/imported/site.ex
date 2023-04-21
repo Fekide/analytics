@@ -3,6 +3,8 @@ defmodule Plausible.Imported do
   use Timex
   require Logger
 
+  @missing_values ["(none)", "(not set)", "(not provided)", "(other)"]
+
   @tables ~w(
     imported_visitors imported_sources imported_pages imported_entry_pages
     imported_exit_pages imported_locations imported_devices imported_browsers
@@ -18,12 +20,18 @@ defmodule Plausible.Imported do
   def from_google_analytics(nil, _site_id, _metric), do: nil
 
   def from_google_analytics(data, site_id, table) do
-    Enum.map(data, fn row -> new_from_google_analytics(site_id, table, row) end)
+    Enum.reduce(data, [], fn row, acc ->
+      if Map.get(row.dimensions, "ga:date") in @missing_values do
+        acc
+      else
+        [new_from_google_analytics(site_id, table, row) | acc]
+      end
+    end)
   end
 
   defp parse_number(nr) do
     {float, ""} = Float.parse(nr)
-    float
+    round(float)
   end
 
   defp new_from_google_analytics(site_id, "imported_visitors", row) do
@@ -90,12 +98,16 @@ defmodule Plausible.Imported do
   end
 
   defp new_from_google_analytics(site_id, "imported_locations", row) do
+    country_code = row.dimensions |> Map.fetch!("ga:countryIsoCode") |> default_if_missing("")
+    city_name = row.dimensions |> Map.fetch!("ga:city") |> default_if_missing("")
+    city_data = Location.get_city(city_name, country_code)
+
     %{
       site_id: site_id,
       date: get_date(row),
-      country: row.dimensions |> Map.fetch!("ga:countryIsoCode") |> default_if_missing(""),
+      country: country_code,
       region: row.dimensions |> Map.fetch!("ga:regionIsoCode") |> default_if_missing(""),
-      city: 0,
+      city: city_data && city_data.id,
       visitors: row.metrics |> Map.fetch!("ga:users") |> parse_number(),
       visits: row.metrics |> Map.fetch!("ga:sessions") |> parse_number(),
       bounces: row.metrics |> Map.fetch!("ga:bounces") |> parse_number(),
@@ -165,7 +177,6 @@ defmodule Plausible.Imported do
     |> NaiveDateTime.to_date()
   end
 
-  @missing_values ["(none)", "(not set)", "(not provided)"]
   defp default_if_missing(value, default \\ nil)
   defp default_if_missing(value, default) when value in @missing_values, do: default
   defp default_if_missing(value, _default), do: value

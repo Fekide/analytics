@@ -1,6 +1,6 @@
 defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
   use PlausibleWeb.ConnCase
-  import Plausible.TestUtils
+
   @user_id 1231
 
   setup [:create_user, :create_new_site, :create_api_key, :use_api_key]
@@ -15,6 +15,32 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
       assert json_response(conn, 400) == %{
                "error" =>
                  "The `property` parameter is required. Please provide at least one property to show a breakdown by."
+             }
+    end
+
+    test "validates that property is valid", %{conn: conn, site: site} do
+      conn =
+        get(conn, "/api/v1/stats/breakdown", %{
+          "site_id" => site.domain,
+          "property" => "badproperty"
+        })
+
+      assert json_response(conn, 400) == %{
+               "error" =>
+                 "Invalid property 'badproperty'. Please provide a valid property for the breakdown endpoint: https://plausible.io/docs/stats-api#properties"
+             }
+    end
+
+    test "empty custom prop is invalid", %{conn: conn, site: site} do
+      conn =
+        get(conn, "/api/v1/stats/breakdown", %{
+          "site_id" => site.domain,
+          "property" => "event:props:"
+        })
+
+      assert json_response(conn, 400) == %{
+               "error" =>
+                 "Invalid property 'event:props:'. Please provide a valid property for the breakdown endpoint: https://plausible.io/docs/stats-api#properties"
              }
     end
 
@@ -41,7 +67,7 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
 
       assert json_response(conn, 400) == %{
                "error" =>
-                 "The metric `baa` is not recognized. Find valid metrics from the documentation: https://plausible.io/docs/stats-api#get-apiv1statsbreakdown"
+                 "The metric `baa` is not recognized. Find valid metrics from the documentation: https://plausible.io/docs/stats-api#metrics"
              }
     end
 
@@ -105,20 +131,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
   end
 
   test "breakdown by visit:source", %{conn: conn, site: site} do
-    populate_stats([
+    populate_stats(site, [
       build(:pageview,
         referrer_source: "Google",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:00:00]
       ),
       build(:pageview,
         referrer_source: "Google",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:25:00]
       ),
       build(:pageview,
         referrer_source: "",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:00:00]
       )
     ])
@@ -140,10 +163,10 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
   end
 
   test "breakdown by visit:country", %{conn: conn, site: site} do
-    populate_stats([
-      build(:pageview, country_code: "EE", domain: site.domain, timestamp: ~N[2021-01-01 00:00:00]),
-      build(:pageview, country_code: "EE", domain: site.domain, timestamp: ~N[2021-01-01 00:25:00]),
-      build(:pageview, country_code: "US", domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+    populate_stats(site, [
+      build(:pageview, country_code: "EE", timestamp: ~N[2021-01-01 00:00:00]),
+      build(:pageview, country_code: "EE", timestamp: ~N[2021-01-01 00:25:00]),
+      build(:pageview, country_code: "US", timestamp: ~N[2021-01-01 00:00:00])
     ])
 
     conn =
@@ -163,20 +186,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
   end
 
   test "breakdown by visit:referrer", %{conn: conn, site: site} do
-    populate_stats([
+    populate_stats(site, [
       build(:pageview,
         referrer: "https://ref.com",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:00:00]
       ),
       build(:pageview,
         referrer: "https://ref.com",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:25:00]
       ),
       build(:pageview,
         referrer: "",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:00:00]
       )
     ])
@@ -198,20 +218,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
   end
 
   test "breakdown by visit:utm_medium", %{conn: conn, site: site} do
-    populate_stats([
+    populate_stats(site, [
       build(:pageview,
         utm_medium: "Search",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:00:00]
       ),
       build(:pageview,
         utm_medium: "Search",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:25:00]
       ),
       build(:pageview,
         utm_medium: "",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:00:00]
       )
     ])
@@ -233,20 +250,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
   end
 
   test "breakdown by visit:utm_source", %{conn: conn, site: site} do
-    populate_stats([
+    populate_stats(site, [
       build(:pageview,
         utm_source: "Google",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:00:00]
       ),
       build(:pageview,
         utm_source: "Google",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:25:00]
       ),
       build(:pageview,
         utm_source: "",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:00:00]
       )
     ])
@@ -364,20 +378,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
   end
 
   test "breakdown by visit:device", %{conn: conn, site: site} do
-    populate_stats([
+    populate_stats(site, [
       build(:pageview,
         screen_size: "Desktop",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:00:00]
       ),
       build(:pageview,
         screen_size: "Desktop",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:25:00]
       ),
       build(:pageview,
         screen_size: "Mobile",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:00:00]
       )
     ])
@@ -399,20 +410,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
   end
 
   test "breakdown by visit:os", %{conn: conn, site: site} do
-    populate_stats([
+    populate_stats(site, [
       build(:pageview,
         operating_system: "Mac",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:00:00]
       ),
       build(:pageview,
         operating_system: "Mac",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:25:00]
       ),
       build(:pageview,
         operating_system: "Windows",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:00:00]
       )
     ])
@@ -434,20 +442,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
   end
 
   test "breakdown by visit:os_version", %{conn: conn, site: site} do
-    populate_stats([
+    populate_stats(site, [
       build(:pageview,
         operating_system_version: "10.5",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:00:00]
       ),
       build(:pageview,
         operating_system_version: "10.5",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:25:00]
       ),
       build(:pageview,
         operating_system_version: "10.6",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:00:00]
       )
     ])
@@ -469,10 +474,10 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
   end
 
   test "breakdown by visit:browser", %{conn: conn, site: site} do
-    populate_stats([
-      build(:pageview, browser: "Firefox", domain: site.domain, timestamp: ~N[2021-01-01 00:00:00]),
-      build(:pageview, browser: "Firefox", domain: site.domain, timestamp: ~N[2021-01-01 00:25:00]),
-      build(:pageview, browser: "Safari", domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+    populate_stats(site, [
+      build(:pageview, browser: "Firefox", timestamp: ~N[2021-01-01 00:00:00]),
+      build(:pageview, browser: "Firefox", timestamp: ~N[2021-01-01 00:25:00]),
+      build(:pageview, browser: "Safari", timestamp: ~N[2021-01-01 00:00:00])
     ])
 
     conn =
@@ -492,20 +497,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
   end
 
   test "breakdown by visit:browser_version", %{conn: conn, site: site} do
-    populate_stats([
+    populate_stats(site, [
       build(:pageview,
         browser_version: "56",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:00:00]
       ),
       build(:pageview,
         browser_version: "56",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:25:00]
       ),
       build(:pageview,
         browser_version: "57",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:00:00]
       )
     ])
@@ -527,12 +529,11 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
   end
 
   test "breakdown by event:page", %{conn: conn, site: site} do
-    populate_stats([
-      build(:pageview, pathname: "/", domain: site.domain, timestamp: ~N[2021-01-01 00:00:00]),
-      build(:pageview, pathname: "/", domain: site.domain, timestamp: ~N[2021-01-01 00:25:00]),
+    populate_stats(site, [
+      build(:pageview, pathname: "/", timestamp: ~N[2021-01-01 00:00:00]),
+      build(:pageview, pathname: "/", timestamp: ~N[2021-01-01 00:25:00]),
       build(:pageview,
         pathname: "/plausible.io",
-        domain: site.domain,
         timestamp: ~N[2021-01-01 00:00:00]
       )
     ])
@@ -553,21 +554,45 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
            }
   end
 
+  test "breakdown by event:page when there are no events in the second page", %{
+    conn: conn,
+    site: site
+  } do
+    populate_stats(site, [
+      build(:pageview, pathname: "/", timestamp: ~N[2021-01-01 00:00:00]),
+      build(:pageview, pathname: "/", timestamp: ~N[2021-01-01 00:25:00]),
+      build(:pageview,
+        pathname: "/plausible.io",
+        timestamp: ~N[2021-01-01 00:00:00]
+      )
+    ])
+
+    conn =
+      get(conn, "/api/v1/stats/breakdown", %{
+        "site_id" => site.domain,
+        "period" => "day",
+        "date" => "2021-01-01",
+        "property" => "event:page",
+        "metrics" => "visitors,bounce_rate",
+        "page" => 2,
+        "limit" => 2
+      })
+
+    assert json_response(conn, 200) == %{"results" => []}
+  end
+
   describe "custom events" do
     test "can breakdown by event:name", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:event,
           name: "Signup",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Signup",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         )
       ])
@@ -589,40 +614,34 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
     end
 
     test "can breakdown by event:name with visitors and events metrics", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
-          domain: site.domain,
           pathname: "/non-existing",
           user_id: @user_id,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "404",
-          domain: site.domain,
           pathname: "/non-existing",
           user_id: @user_id,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
-          domain: site.domain,
           pathname: "/non-existing",
           timestamp: ~N[2021-01-01 00:00:01]
         ),
         build(:pageview,
-          domain: site.domain,
           pathname: "/non-existing",
           user_id: @user_id,
           timestamp: ~N[2021-01-01 00:00:02]
         ),
         build(:event,
           name: "404",
-          domain: site.domain,
           pathname: "/non-existing",
           user_id: @user_id,
           timestamp: ~N[2021-01-01 00:00:02]
         ),
         build(:pageview,
-          domain: site.domain,
           pathname: "/non-existing",
           user_id: @user_id,
           timestamp: ~N[2021-01-01 00:00:03]
@@ -647,39 +666,34 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
     end
 
     test "can breakdown by event:name while filtering for something", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:event,
           name: "Signup",
           pathname: "/pageA",
           browser: "Chrome",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Signup",
           pathname: "/pageA",
           browser: "Chrome",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Signup",
           pathname: "/pageA",
           browser: "Safari",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Signup",
           pathname: "/pageB",
           browser: "Chrome",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           pathname: "/pageA",
           browser: "Chrome",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         )
       ])
@@ -705,21 +719,18 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
       conn: conn,
       site: site
     } do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           referrer_source: "Google",
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Signup",
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
-          domain: site.domain,
           referrer_source: "Twitter",
           timestamp: ~N[2021-01-01 00:25:00]
         )
@@ -742,26 +753,22 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
     end
 
     test "can breakdown by event:name when filtering by event:page", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           pathname: "/pageA",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           pathname: "/pageA",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           pathname: "/pageA",
           name: "Signup",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           pathname: "/pageB",
-          domain: site.domain,
           referrer_source: "Twitter",
           timestamp: ~N[2021-01-01 00:25:00]
         )
@@ -785,28 +792,24 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
     end
 
     test "can breakdown by event:page when filtering by event:name", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:event,
           name: "Signup",
           pathname: "/pageA",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Signup",
           pathname: "/pageA",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Signup",
           pathname: "/pageB",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           pathname: "/pageB",
-          domain: site.domain,
           referrer_source: "Twitter",
           timestamp: ~N[2021-01-01 00:25:00]
         )
@@ -857,33 +860,29 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
     end
 
     test "breakdown by custom event property", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:event,
           name: "Purchase",
           "meta.key": ["package"],
           "meta.value": ["business"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Purchase",
           "meta.key": ["package"],
           "meta.value": ["personal"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Purchase",
           "meta.key": ["package"],
           "meta.value": ["business"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
         build(:event,
           name: "Some other event",
           "meta.key": ["package"],
           "meta.value": ["business"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         )
       ])
@@ -906,45 +905,39 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
     end
 
     test "breakdown by custom event property, with (none)", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:event,
           name: "Purchase",
           "meta.key": ["cost"],
           "meta.value": ["16"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Purchase",
           "meta.key": ["cost"],
           "meta.value": ["16"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Purchase",
           "meta.key": ["cost"],
           "meta.value": ["16"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Purchase",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
         build(:event,
           name: "Purchase",
           "meta.key": ["cost"],
           "meta.value": ["14"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
         build(:event,
           name: "Purchase",
           "meta.key": ["cost"],
           "meta.value": ["14"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:26:00]
         )
       ])
@@ -968,33 +961,29 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
     end
 
     test "breakdown by custom event property, limited", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:event,
           name: "Purchase",
           "meta.key": ["cost"],
           "meta.value": ["16"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Purchase",
           "meta.key": ["cost"],
           "meta.value": ["18"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
         build(:event,
           name: "Purchase",
           "meta.key": ["cost"],
           "meta.value": ["14"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
         build(:event,
           name: "Purchase",
           "meta.key": ["cost"],
           "meta.value": ["14"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:26:00]
         )
       ])
@@ -1018,40 +1007,35 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
     end
 
     test "breakdown by custom event property, paginated", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:event,
           name: "Purchase",
           "meta.key": ["cost"],
           "meta.value": ["16"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Purchase",
           "meta.key": ["cost"],
           "meta.value": ["16"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Purchase",
           "meta.key": ["cost"],
           "meta.value": ["18"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
         build(:event,
           name: "Purchase",
           "meta.key": ["cost"],
           "meta.value": ["14"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
         build(:event,
           name: "Purchase",
           "meta.key": ["cost"],
           "meta.value": ["14"],
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:26:00]
         )
       ])
@@ -1081,14 +1065,12 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
       insert(:goal, %{domain: site.domain, event_name: "Purchase"})
       insert(:goal, %{domain: site.domain, page_path: "/test"})
 
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00],
           pathname: "/test"
         ),
         build(:pageview,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:01],
           pathname: "/test",
           "meta.key": ["method"],
@@ -1096,14 +1078,12 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
         ),
         build(:event,
           name: "404",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:02],
           "meta.key": ["method"],
           "meta.value": ["HTTP"]
         ),
         build(:event,
           name: "Purchase",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:02],
           "meta.key": ["method"],
           "meta.value": ["HTTPS"]
@@ -1111,14 +1091,12 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
         build(:event,
           name: "404",
           timestamp: ~N[2021-01-01 00:00:03],
-          domain: site.domain,
           "meta.key": ["OS", "method"],
           "meta.value": ["Linux", "HTTP"]
         ),
         build(:event,
           name: "404",
           timestamp: ~N[2021-01-01 00:00:04],
-          domain: site.domain,
           "meta.key": ["version"],
           "meta.value": ["1"]
         )
@@ -1159,29 +1137,25 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
 
   describe "filtering" do
     test "event:page filter for breakdown by session props", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           pathname: "/ignore",
           browser: "Chrome",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           pathname: "/plausible.io",
           browser: "Chrome",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           pathname: "/plausible.io",
           browser: "Chrome",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
         build(:pageview,
           browser: "Safari",
           pathname: "/plausible.io",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         )
       ])
@@ -1203,22 +1177,29 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
              }
     end
 
-    test "event:page filter shows traffic sources directly to that page", %{
+    test "event:page filter shows sources of sessions that have visited that page", %{
       conn: conn,
       site: site
     } do
       populate_stats(site, [
         build(:pageview,
-          pathname: "/ignore",
-          referrer_source: "Should not show up",
-          utm_medium: "Should not show up",
-          utm_source: "Should not show up",
-          utm_campaign: "Should not show up",
+          pathname: "/",
+          referrer_source: "Twitter",
+          utm_medium: "Twitter",
+          utm_source: "Twitter",
+          utm_campaign: "Twitter",
           user_id: @user_id
         ),
         build(:pageview,
           pathname: "/plausible.io",
           user_id: @user_id
+        ),
+        build(:pageview,
+          pathname: "/plausible.io",
+          referrer_source: "Google",
+          utm_medium: "Google",
+          utm_source: "Google",
+          utm_campaign: "Google"
         ),
         build(:pageview,
           pathname: "/plausible.io",
@@ -1240,7 +1221,8 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
 
         assert json_response(conn, 200) == %{
                  "results" => [
-                   %{property => "Google", "visitors" => 1}
+                   %{property => "Google", "visitors" => 2},
+                   %{property => "Twitter", "visitors" => 1}
                  ]
                }
       end
@@ -1347,25 +1329,21 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
     end
 
     test "IN filter for event:page", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           pathname: "/ignore",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           pathname: "/plausible.io",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           pathname: "/plausible.io",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           pathname: "/important-page",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         )
       ])
@@ -1388,29 +1366,25 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
     end
 
     test "IN filter for visit:browser", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           pathname: "/ignore",
           browser: "Firefox",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           pathname: "/plausible.io",
           browser: "Chrome",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           pathname: "/plausible.io",
           browser: "Safari",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           pathname: "/important-page",
           browser: "Safari",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         )
       ])
@@ -1433,25 +1407,21 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
     end
 
     test "IN filter for visit:entry_page", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           pathname: "/ignore",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           pathname: "/plausible.io",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           pathname: "/plausible.io",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           pathname: "/important-page",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         )
       ])
@@ -1475,25 +1445,21 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
     end
 
     test "IN filter for event:name", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:event,
           name: "Signup",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Signup",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Login",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Irrelevant",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         )
       ])
@@ -1541,10 +1507,10 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
 
   describe "pagination" do
     test "can limit results", %{conn: conn, site: site} do
-      populate_stats([
-        build(:pageview, pathname: "/a", domain: site.domain, timestamp: ~N[2021-01-01 00:00:00]),
-        build(:pageview, pathname: "/b", domain: site.domain, timestamp: ~N[2021-01-01 00:25:00]),
-        build(:pageview, pathname: "/c", domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+      populate_stats(site, [
+        build(:pageview, pathname: "/a", timestamp: ~N[2021-01-01 00:00:00]),
+        build(:pageview, pathname: "/b", timestamp: ~N[2021-01-01 00:25:00]),
+        build(:pageview, pathname: "/c", timestamp: ~N[2021-01-01 00:00:00])
       ])
 
       conn =
@@ -1558,6 +1524,41 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
 
       res = json_response(conn, 200)
       assert Enum.count(res["results"]) == 2
+    end
+
+    test "does not repeat results", %{conn: conn, site: site} do
+      populate_stats(site, [
+        build(:pageview, %{"meta.key": ["item"], "meta.value": ["apple"]}),
+        build(:pageview, %{"meta.key": ["item"], "meta.value": ["kiwi"]}),
+        build(:pageview, %{"meta.key": ["item"], "meta.value": ["pineapple"]}),
+        build(:pageview, %{"meta.key": ["item"], "meta.value": ["grapes"]})
+      ])
+
+      params = %{
+        "site_id" => site.domain,
+        "metrics" => "visitors",
+        "property" => "event:props:item",
+        "limit" => 3,
+        "page" => nil
+      }
+
+      first_page =
+        conn
+        |> get("/api/v1/stats/breakdown", %{params | "page" => 1})
+        |> json_response(200)
+        |> Map.get("results")
+        |> Enum.map(& &1["item"])
+        |> MapSet.new()
+
+      second_page =
+        conn
+        |> get("/api/v1/stats/breakdown", %{params | "page" => 2})
+        |> json_response(200)
+        |> Map.get("results")
+        |> Enum.map(& &1["item"])
+        |> MapSet.new()
+
+      assert first_page |> MapSet.intersection(second_page) |> Enum.empty?()
     end
 
     @invalid_limit_message "Please provide limit as a number between 1 and 1000."
@@ -1596,10 +1597,10 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
     end
 
     test "can paginate results", %{conn: conn, site: site} do
-      populate_stats([
-        build(:pageview, pathname: "/a", domain: site.domain, timestamp: ~N[2021-01-01 00:00:00]),
-        build(:pageview, pathname: "/b", domain: site.domain, timestamp: ~N[2021-01-01 00:25:00]),
-        build(:pageview, pathname: "/c", domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+      populate_stats(site, [
+        build(:pageview, pathname: "/a", timestamp: ~N[2021-01-01 00:00:00]),
+        build(:pageview, pathname: "/b", timestamp: ~N[2021-01-01 00:25:00]),
+        build(:pageview, pathname: "/c", timestamp: ~N[2021-01-01 00:00:00])
       ])
 
       conn =
@@ -1723,13 +1724,12 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
     end
 
     test "filter by custom event property", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:event,
           name: "Purchase",
           "meta.key": ["package"],
           "meta.value": ["business"],
           browser: "Chrome",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
@@ -1737,7 +1737,6 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
           "meta.key": ["package"],
           "meta.value": ["business"],
           browser: "Safari",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
@@ -1745,7 +1744,6 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
           "meta.key": ["package"],
           "meta.value": ["business"],
           browser: "Safari",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
         build(:event,
@@ -1753,7 +1751,6 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
           "meta.key": ["package"],
           "meta.value": ["personal"],
           browser: "IE",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         )
       ])
@@ -1776,23 +1773,20 @@ defmodule PlausibleWeb.Api.ExternalStatsController.BreakdownTest do
     end
 
     test "all metrics for breakdown by event prop", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           user_id: 1,
           pathname: "/",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           user_id: 1,
           pathname: "/plausible.io",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:10:00]
         ),
-        build(:pageview, pathname: "/", domain: site.domain, timestamp: ~N[2021-01-01 00:25:00]),
+        build(:pageview, pathname: "/", timestamp: ~N[2021-01-01 00:25:00]),
         build(:pageview,
           pathname: "/plausible.io",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         )
       ])

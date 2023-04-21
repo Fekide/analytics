@@ -12,95 +12,28 @@ defmodule Plausible.Billing do
     user_id |> active_subscription_query() |> Repo.exists?()
   end
 
-  defp active_subscription_query(user_id) do
-    from(
-      s in Subscription,
-      where: s.user_id == ^user_id and s.status == "active",
-      order_by: [desc: s.inserted_at],
-      limit: 1
-    )
-  end
-
   def subscription_created(params) do
-    params =
-      if present?(params["passthrough"]) do
-        params
-      else
-        user = Repo.get_by(Plausible.Auth.User, email: params["email"])
-        Map.put(params, "passthrough", user && user.id)
-      end
-
-    changeset = Subscription.changeset(%Subscription{}, format_subscription(params))
-
-    Repo.insert(changeset) |> after_subscription_update
+    Repo.transaction(fn ->
+      handle_subscription_created(params)
+    end)
   end
 
   def subscription_updated(params) do
-    subscription = Repo.get_by!(Subscription, paddle_subscription_id: params["subscription_id"])
-    changeset = Subscription.changeset(subscription, format_subscription(params))
-
-    Repo.update(changeset) |> after_subscription_update
+    Repo.transaction(fn ->
+      handle_subscription_updated(params)
+    end)
   end
-
-  defp after_subscription_update({:ok, subscription}) do
-    user =
-      Repo.get(Plausible.Auth.User, subscription.user_id)
-      |> Map.put(:subscription, subscription)
-
-    {:ok, user}
-    |> maybe_remove_grace_period
-    |> check_lock_status
-    |> maybe_adjust_api_key_limits
-  end
-
-  defp after_subscription_update(err), do: err
 
   def subscription_cancelled(params) do
-    subscription =
-      Repo.get_by(Subscription, paddle_subscription_id: params["subscription_id"])
-      |> Repo.preload(:user)
-
-    if subscription do
-      changeset =
-        Subscription.changeset(subscription, %{
-          status: params["status"]
-        })
-
-      case Repo.update(changeset) do
-        {:ok, updated} ->
-          PlausibleWeb.Email.cancellation_email(subscription.user)
-          |> Plausible.Mailer.send_email_safe()
-
-          {:ok, updated}
-
-        err ->
-          err
-      end
-    else
-      {:ok, nil}
-    end
+    Repo.transaction(fn ->
+      handle_subscription_cancelled(params)
+    end)
   end
 
   def subscription_payment_succeeded(params) do
-    subscription = Repo.get_by(Subscription, paddle_subscription_id: params["subscription_id"])
-
-    if subscription do
-      {:ok, api_subscription} = paddle_api().get_subscription(subscription.paddle_subscription_id)
-
-      amount =
-        :erlang.float_to_binary(api_subscription["next_payment"]["amount"] / 1, decimals: 2)
-
-      changeset =
-        Subscription.changeset(subscription, %{
-          next_bill_amount: amount,
-          next_bill_date: api_subscription["next_payment"]["date"],
-          last_bill_date: api_subscription["last_payment"]["date"]
-        })
-
-      Repo.update(changeset)
-    else
-      {:ok, nil}
-    end
+    Repo.transaction(fn ->
+      handle_subscription_payment_succeeded(params)
+    end)
   end
 
   def change_plan(user, new_plan_id) do
@@ -180,17 +113,36 @@ defmodule Plausible.Billing do
 
   def last_two_billing_months_usage(user, today \\ Timex.today()) do
     {first, second} = last_two_billing_cycles(user, today)
-    domains = Plausible.Sites.owned_sites_domains(user)
 
-    usage_for_sites = fn domains, date_range ->
-      {pageviews, custom_events} = Plausible.Stats.Clickhouse.usage_breakdown(domains, date_range)
-      pageviews + custom_events
+    if Plausible.v2?() do
+      site_ids = Plausible.Sites.owned_site_ids(user)
+
+      usage_for_sites = fn site_ids, date_range ->
+        {pageviews, custom_events} =
+          Plausible.Stats.Clickhouse.usage_breakdown(site_ids, date_range)
+
+        pageviews + custom_events
+      end
+
+      {
+        usage_for_sites.(site_ids, first),
+        usage_for_sites.(site_ids, second)
+      }
+    else
+      domains = Plausible.Sites.owned_sites_domains(user)
+
+      usage_for_sites = fn domains, date_range ->
+        {pageviews, custom_events} =
+          Plausible.Stats.Clickhouse.usage_breakdown(domains, date_range)
+
+        pageviews + custom_events
+      end
+
+      {
+        usage_for_sites.(domains, first),
+        usage_for_sites.(domains, second)
+      }
     end
-
-    {
-      usage_for_sites.(domains, first),
-      usage_for_sites.(domains, second)
-    }
   end
 
   def last_two_billing_cycles(user, today \\ Timex.today()) do
@@ -214,8 +166,13 @@ defmodule Plausible.Billing do
   end
 
   def usage_breakdown(user) do
-    domains = Plausible.Sites.owned_sites_domains(user)
-    Plausible.Stats.Clickhouse.usage_breakdown(domains)
+    if Plausible.v2?() do
+      site_ids = Plausible.Sites.owned_site_ids(user)
+      Plausible.Stats.Clickhouse.usage_breakdown(site_ids)
+    else
+      domains = Plausible.Sites.owned_sites_domains(user)
+      Plausible.Stats.Clickhouse.usage_breakdown(domains)
+    end
   end
 
   def usage_by_site(site) do
@@ -258,14 +215,80 @@ defmodule Plausible.Billing do
     end
   end
 
+  defp handle_subscription_created(params) do
+    params =
+      if present?(params["passthrough"]) do
+        params
+      else
+        user = Repo.get_by(Plausible.Auth.User, email: params["email"])
+        Map.put(params, "passthrough", user && user.id)
+      end
+
+    %Subscription{}
+    |> Subscription.changeset(format_subscription(params))
+    |> Repo.insert!()
+    |> after_subscription_update()
+  end
+
+  defp handle_subscription_updated(params) do
+    Subscription
+    |> Repo.get_by!(paddle_subscription_id: params["subscription_id"])
+    |> Subscription.changeset(format_subscription(params))
+    |> Repo.update!()
+    |> after_subscription_update()
+  end
+
+  defp handle_subscription_cancelled(params) do
+    subscription =
+      Subscription
+      |> Repo.get_by(paddle_subscription_id: params["subscription_id"])
+      |> Repo.preload(:user)
+
+    if subscription do
+      changeset =
+        Subscription.changeset(subscription, %{
+          status: params["status"]
+        })
+
+      updated = Repo.update!(changeset)
+
+      subscription
+      |> Map.fetch!(:user)
+      |> PlausibleWeb.Email.cancellation_email()
+      |> Plausible.Mailer.send()
+
+      updated
+    end
+  end
+
+  defp handle_subscription_payment_succeeded(params) do
+    subscription = Repo.get_by(Subscription, paddle_subscription_id: params["subscription_id"])
+
+    if subscription do
+      {:ok, api_subscription} = paddle_api().get_subscription(subscription.paddle_subscription_id)
+
+      amount =
+        :erlang.float_to_binary(api_subscription["next_payment"]["amount"] / 1, decimals: 2)
+
+      subscription
+      |> Subscription.changeset(%{
+        next_bill_amount: amount,
+        next_bill_date: api_subscription["next_payment"]["date"],
+        last_bill_date: api_subscription["last_payment"]["date"]
+      })
+      |> Repo.update!()
+    end
+  end
+
   defp has_active_enterprise_subscription(user) do
     Plausible.Repo.exists?(
-      from s in Plausible.Billing.Subscription,
+      from(s in Plausible.Billing.Subscription,
         join: e in Plausible.Billing.EnterprisePlan,
         on: s.user_id == e.user_id and s.paddle_plan_id == e.paddle_plan_id,
         where: s.user_id == ^user.id,
         where: s.paddle_plan_id == ^user.enterprise_plan.paddle_plan_id,
         where: s.status == "active"
+      )
     )
   end
 
@@ -287,7 +310,7 @@ defmodule Plausible.Billing do
   defp present?(nil), do: false
   defp present?(_), do: true
 
-  defp maybe_remove_grace_period({:ok, user}) do
+  defp maybe_remove_grace_period(%Plausible.Auth.User{} = user) do
     alias Plausible.Auth.GracePeriod
 
     case user.grace_period do
@@ -297,26 +320,22 @@ defmodule Plausible.Billing do
         if new_allowance > allowance_required do
           user
           |> Plausible.Auth.GracePeriod.remove_changeset()
-          |> Repo.update()
+          |> Repo.update!()
         else
-          {:ok, user}
+          user
         end
 
       _ ->
-        {:ok, user}
+        user
     end
   end
 
-  defp maybe_remove_grace_period(err), do: err
-
-  defp check_lock_status({:ok, user}) do
+  defp check_lock_status(user) do
     Plausible.Billing.SiteLocker.check_sites_for(user)
-    {:ok, user}
+    user
   end
 
-  defp check_lock_status(err), do: err
-
-  defp maybe_adjust_api_key_limits({:ok, user}) do
+  defp maybe_adjust_api_key_limits(user) do
     plan =
       Repo.get_by(Plausible.Billing.EnterprisePlan,
         user_id: user.id,
@@ -329,10 +348,27 @@ defmodule Plausible.Billing do
       Repo.update_all(api_keys, set: [hourly_request_limit: plan.hourly_api_request_limit])
     end
 
-    {:ok, user}
+    user
   end
 
-  defp maybe_adjust_api_key_limits(err), do: err
-
   def paddle_api(), do: Application.fetch_env!(:plausible, :paddle_api)
+
+  defp active_subscription_query(user_id) do
+    from s in Subscription,
+      where: s.user_id == ^user_id and s.status == "active",
+      order_by: [desc: s.inserted_at],
+      limit: 1
+  end
+
+  defp after_subscription_update(subscription) do
+    user =
+      Plausible.Auth.User
+      |> Repo.get!(subscription.user_id)
+      |> Map.put(:subscription, subscription)
+
+    user
+    |> maybe_remove_grace_period()
+    |> check_lock_status()
+    |> maybe_adjust_api_key_limits()
+  end
 end

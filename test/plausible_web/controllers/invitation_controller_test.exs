@@ -2,7 +2,6 @@ defmodule PlausibleWeb.Site.InvitationControllerTest do
   use PlausibleWeb.ConnCase
   use Plausible.Repo
   use Bamboo.Test
-  import Plausible.TestUtils
 
   setup [:create_user, :log_in]
 
@@ -162,6 +161,33 @@ defmodule PlausibleWeb.Site.InvitationControllerTest do
 
       assert new_owner_membership.role == :owner
     end
+
+    test "works in self-hosted", %{conn: conn, user: user} do
+      patch_env(:is_selfhost, true)
+
+      old_owner = insert(:user)
+      site = insert(:site, members: [old_owner])
+
+      invitation =
+        insert(:invitation,
+          site_id: site.id,
+          inviter: old_owner,
+          email: user.email,
+          role: :owner
+        )
+
+      post(conn, "/sites/invitations/#{invitation.invitation_id}/accept")
+
+      old_owner_membership =
+        Repo.get_by(Plausible.Site.Membership, user_id: old_owner.id, site_id: site.id)
+
+      assert old_owner_membership.role == :admin
+
+      new_owner_membership =
+        Repo.get_by(Plausible.Site.Membership, user_id: user.id, site_id: site.id)
+
+      assert new_owner_membership.role == :owner
+    end
   end
 
   describe "POST /sites/invitations/:invitation_id/reject" do
@@ -197,9 +223,9 @@ defmodule PlausibleWeb.Site.InvitationControllerTest do
     end
   end
 
-  describe "DELETE /sites/invitations/:invitation_id" do
-    test "removes the invitation", %{conn: conn} do
-      site = insert(:site)
+  describe "DELETE /sites/:website/invitations/:invitation_id" do
+    test "removes the invitation", %{conn: conn, user: user} do
+      site = insert(:site, memberships: [build(:site_membership, user: user, role: :admin)])
 
       invitation =
         insert(:invitation,
@@ -209,9 +235,64 @@ defmodule PlausibleWeb.Site.InvitationControllerTest do
           role: :admin
         )
 
-      delete(conn, "/sites/invitations/#{invitation.invitation_id}")
+      delete(
+        conn,
+        Routes.invitation_path(conn, :remove_invitation, site.domain, invitation.invitation_id)
+      )
 
       refute Repo.exists?(
+               from i in Plausible.Auth.Invitation, where: i.email == "jane@example.com"
+             )
+    end
+
+    test "fails to remove an invitation with insufficient permission", %{conn: conn, user: user} do
+      site = insert(:site, memberships: [build(:site_membership, user: user, role: :viewer)])
+
+      invitation =
+        insert(:invitation,
+          site_id: site.id,
+          inviter: build(:user),
+          email: "jane@example.com",
+          role: :admin
+        )
+
+      delete(
+        conn,
+        Routes.invitation_path(conn, :remove_invitation, site.domain, invitation.invitation_id)
+      )
+
+      assert Repo.exists?(
+               from i in Plausible.Auth.Invitation, where: i.email == "jane@example.com"
+             )
+    end
+
+    test "fails to remove an invitation from the outside", %{conn: my_conn, user: me} do
+      my_site = insert(:site)
+      insert(:site_membership, site: my_site, user: me, role: "owner")
+
+      other_user = insert(:user)
+      other_site = insert(:site)
+      insert(:site_membership, site: other_site, user: other_user, role: "owner")
+
+      invitation =
+        insert(:invitation,
+          site_id: other_site.id,
+          inviter: other_user,
+          email: "jane@example.com",
+          role: :admin
+        )
+
+      remove_invitation_path =
+        Routes.invitation_path(
+          my_conn,
+          :remove_invitation,
+          other_site.domain,
+          invitation.invitation_id
+        )
+
+      delete(my_conn, remove_invitation_path)
+
+      assert Repo.exists?(
                from i in Plausible.Auth.Invitation, where: i.email == "jane@example.com"
              )
     end

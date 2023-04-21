@@ -7,67 +7,17 @@ defmodule Plausible.Stats.Query do
             include_imported: false
 
   @default_sample_threshold 20_000_000
-  alias Plausible.Stats.FilterParser
+  require OpenTelemetry.Tracer, as: Tracer
+  alias Plausible.Stats.{FilterParser, Interval}
 
-  def shift_back(%__MODULE__{period: "year"} = query, site) do
-    # Querying current year to date
-    {new_first, new_last} =
-      if Timex.compare(Timex.now(site.timezone), query.date_range.first, :year) == 0 do
-        diff =
-          Timex.diff(
-            Timex.beginning_of_year(Timex.now(site.timezone)),
-            Timex.now(site.timezone),
-            :days
-          ) - 1
-
-        {query.date_range.first |> Timex.shift(days: diff),
-         Timex.now(site.timezone) |> Timex.to_date() |> Timex.shift(days: diff)}
-      else
-        diff = Timex.diff(query.date_range.first, query.date_range.last, :days) - 1
-
-        {query.date_range.first |> Timex.shift(days: diff),
-         query.date_range.last |> Timex.shift(days: diff)}
-      end
-
-    Map.put(query, :date_range, Date.range(new_first, new_last))
-  end
-
-  def shift_back(%__MODULE__{period: "month"} = query, site) do
-    # Querying current month to date
-    {new_first, new_last} =
-      if Timex.compare(Timex.now(site.timezone), query.date_range.first, :month) == 0 do
-        diff =
-          Timex.diff(
-            Timex.beginning_of_month(Timex.now(site.timezone)),
-            Timex.now(site.timezone),
-            :days
-          ) - 1
-
-        {query.date_range.first |> Timex.shift(days: diff),
-         Timex.now(site.timezone) |> Timex.to_date() |> Timex.shift(days: diff)}
-      else
-        diff = Timex.diff(query.date_range.first, query.date_range.last, :days) - 1
-
-        {query.date_range.first |> Timex.shift(days: diff),
-         query.date_range.last |> Timex.shift(days: diff)}
-      end
-
-    Map.put(query, :date_range, Date.range(new_first, new_last))
-  end
-
-  def shift_back(query, _site) do
-    diff = Timex.diff(query.date_range.first, query.date_range.last, :days) - 1
-    new_first = query.date_range.first |> Timex.shift(days: diff)
-    new_last = query.date_range.last |> Timex.shift(days: diff)
-    Map.put(query, :date_range, Date.range(new_first, new_last))
-  end
+  @type t :: %__MODULE__{}
 
   def from(site, %{"period" => "realtime"} = params) do
     date = today(site.timezone)
 
     %__MODULE__{
       period: "realtime",
-      interval: "minute",
+      interval: params["interval"] || Interval.default_for_period(params["period"]),
       date_range: Date.range(date, date),
       filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold),
@@ -81,7 +31,7 @@ defmodule Plausible.Stats.Query do
     %__MODULE__{
       period: "day",
       date_range: Date.range(date, date),
-      interval: "hour",
+      interval: params["interval"] || Interval.default_for_period(params["period"]),
       filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold)
     }
@@ -95,7 +45,7 @@ defmodule Plausible.Stats.Query do
     %__MODULE__{
       period: "7d",
       date_range: Date.range(start_date, end_date),
-      interval: "date",
+      interval: params["interval"] || Interval.default_for_period(params["period"]),
       filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold)
     }
@@ -109,7 +59,7 @@ defmodule Plausible.Stats.Query do
     %__MODULE__{
       period: "30d",
       date_range: Date.range(start_date, end_date),
-      interval: "date",
+      interval: params["interval"] || Interval.default_for_period(params["period"]),
       filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold)
     }
@@ -125,7 +75,7 @@ defmodule Plausible.Stats.Query do
     %__MODULE__{
       period: "month",
       date_range: Date.range(start_date, end_date),
-      interval: "date",
+      interval: params["interval"] || Interval.default_for_period(params["period"]),
       filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold)
     }
@@ -144,7 +94,7 @@ defmodule Plausible.Stats.Query do
     %__MODULE__{
       period: "6mo",
       date_range: Date.range(start_date, end_date),
-      interval: Map.get(params, "interval", "month"),
+      interval: params["interval"] || Interval.default_for_period(params["period"]),
       filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold)
     }
@@ -163,7 +113,7 @@ defmodule Plausible.Stats.Query do
     %__MODULE__{
       period: "12mo",
       date_range: Date.range(start_date, end_date),
-      interval: Map.get(params, "interval", "month"),
+      interval: params["interval"] || Interval.default_for_period(params["period"]),
       filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold)
     }
@@ -180,7 +130,7 @@ defmodule Plausible.Stats.Query do
     %__MODULE__{
       period: "year",
       date_range: Date.range(start_date, end_date),
-      interval: Map.get(params, "interval", "month"),
+      interval: params["interval"] || Interval.default_for_period(params["period"]),
       filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold)
     }
@@ -199,7 +149,7 @@ defmodule Plausible.Stats.Query do
             "period" => "custom",
             "from" => Date.to_iso8601(start_date),
             "to" => Date.to_iso8601(now),
-            "interval" => "month"
+            "interval" => params["interval"] || "month"
           })
         )
         |> Map.put(:period, "all")
@@ -211,7 +161,7 @@ defmodule Plausible.Stats.Query do
             "period" => "custom",
             "from" => Date.to_iso8601(start_date),
             "to" => Date.to_iso8601(now),
-            "interval" => "date"
+            "interval" => params["interval"] || "date"
           })
         )
         |> Map.put(:period, "all")
@@ -240,7 +190,7 @@ defmodule Plausible.Stats.Query do
     %__MODULE__{
       period: "custom",
       date_range: Date.range(from_date, to_date),
-      interval: Map.get(params, "interval", "date"),
+      interval: params["interval"] || Interval.default_for_period(params["period"]),
       filters: FilterParser.parse_filters(params["filters"]),
       sample_threshold: Map.get(params, "sample_threshold", @default_sample_threshold)
     }
@@ -256,30 +206,6 @@ defmodule Plausible.Stats.Query do
       query
       | filters: Map.put(query.filters, key, val)
     }
-  end
-
-  def treat_page_filter_as_entry_page(%__MODULE__{filters: %{"visit:entry_page" => _}} = q), do: q
-
-  def treat_page_filter_as_entry_page(%__MODULE__{filters: %{"event:page" => f}} = q) do
-    q
-    |> put_filter("visit:entry_page", f)
-    |> put_filter("event:page", nil)
-  end
-
-  def treat_page_filter_as_entry_page(q), do: q
-
-  def treat_prop_filter_as_entry_prop(%__MODULE__{filters: filters} = q) do
-    prop_filter = get_filter_by_prefix(q, "event:props:")
-
-    case {filters["event:goal"], prop_filter} do
-      {nil, {"event:props:" <> prop, filter_value}} ->
-        q
-        |> remove_event_filters([:props])
-        |> put_filter("visit:entry_props:" <> prop, filter_value)
-
-      _ ->
-        q
-    end
   end
 
   def remove_event_filters(query, opts) do
@@ -335,5 +261,16 @@ defmodule Plausible.Stats.Query do
       imported_data_requested && has_imported_data && date_range_overlaps && no_filters_applied
 
     %{query | include_imported: !!include_imported}
+  end
+
+  @spec trace(%__MODULE__{}) :: %__MODULE__{}
+  def trace(%__MODULE__{} = query) do
+    Tracer.set_attributes([
+      {"plausible.query.interval", query.interval},
+      {"plausible.query.period", query.period},
+      {"plausible.query.include_imported", query.include_imported}
+    ])
+
+    query
   end
 end

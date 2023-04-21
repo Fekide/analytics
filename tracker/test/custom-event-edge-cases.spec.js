@@ -1,10 +1,9 @@
-const { test } = require('./support/harness');
 const { mockRequest, mockManyRequests, expectCustomEvent } = require('./support/test-utils');
-const { expect } = require('@playwright/test');
+const { expect, test } = require('@playwright/test');
 const { LOCAL_SERVER_ADDR } = require('./support/server');
 
 
-test.describe('script.file-downloads.outbound-links.js', () => {
+test.describe('script.file-downloads.outbound-links.tagged-events.js', () => {
     test('sends only outbound link event when clicked link is both download and outbound', async ({ page }) => {
         await page.goto('/custom-event-edge-case.html')
         const downloadURL = await page.locator('#outbound-download-link').getAttribute('href')
@@ -25,5 +24,16 @@ test.describe('script.file-downloads.outbound-links.js', () => {
         await page.click('#local-download')
 
         expectCustomEvent(await plausibleRequestMock, 'File Download', {url: downloadURL})
+    });
+
+    test('sends only tagged event when clicked link is tagged + outbound + download', async ({ page }) => {
+        await page.goto('/custom-event-edge-case.html')
+
+        const plausibleRequestMockList = mockManyRequests(page, '/api/event', 3)
+        await page.click('#tagged-outbound-download-link')
+
+        const requests = await plausibleRequestMockList
+        expect(requests.length).toBe(1)
+        expectCustomEvent(requests[0], 'Foo', {})
     });
 });

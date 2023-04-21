@@ -4,22 +4,22 @@ import { AdjustmentsVerticalIcon, MagnifyingGlassIcon, XMarkIcon, PencilSquareIc
 import classNames from 'classnames'
 import { Menu, Transition } from '@headlessui/react'
 
-import { appliedFilters, navigateToQuery, formattedFilters } from './query'
+import { appliedFilters, navigateToQuery } from './query'
 import {
   FILTER_GROUPS,
   formatFilterGroup,
   filterGroupForFilter,
-  toFilterType,
-  valueWithoutPrefix
-} from "./stats/modals/filter";
+  parseQueryFilter,
+  formattedFilters
+} from "./util/filters";
 
 function removeFilter(key, history, query) {
   const newOpts = {
     [key]: false
   }
-  if (key === 'country') { newOpts.country_name = false }
-  if (key === 'region')  { newOpts.region_name = false }
-  if (key === 'city')    { newOpts.city_name = false }
+  if (key === 'country') { newOpts.country_labels = false }
+  if (key === 'region') { newOpts.region_labels = false }
+  if (key === 'city') { newOpts.city_labels = false }
 
   navigateToQuery(
     history,
@@ -37,48 +37,15 @@ function clearAllFilters(history, query) {
   );
 }
 
-function filterText(key, rawValue, query) {
-  let type = toFilterType(rawValue)
-  const value = valueWithoutPrefix(rawValue)
-
-  if (key === "goal") {
-    return <>Completed goal <b>{value}</b></>
-  }
-  if (key === "props") {
-    const [metaKey, metaValue] = Object.entries(value)[0]
-    const eventName = query.filters.goal ? query.filters.goal : 'event'
-    return <>{eventName}.{metaKey} {toFilterType(metaValue)} <b>{valueWithoutPrefix(metaValue)}</b></>
-  }
-  if (key === "browser_version") {
-    const browserName = query.filters.browser ? query.filters.browser : 'Browser'
-    return <>{browserName}.Version {type} <b>{value}</b></>
-  }
-  if (key === "os_version") {
-    const osName = query.filters.os ? query.filters.os : 'OS'
-    return <>{osName}.Version {type} <b>{value}</b></>
-  }
-  if (key === "country") {
-    const q = new URLSearchParams(window.location.search)
-    const countryName = q.get('country_name')
-    return <>Country {type} <b>{countryName}</b></>
-  }
-
-  if (key === "region") {
-    const q = new URLSearchParams(window.location.search)
-    const regionName = q.get('region_name')
-    return <>Region {type} <b>{regionName}</b></>
-  }
-
-  if (key === "city") {
-    const q = new URLSearchParams(window.location.search)
-    const cityName = q.get('city_name')
-    return <>City {type} <b>{cityName}</b></>
-  }
-
+function filterText(key, _rawValue, query) {
+  const {type, clauses} = parseQueryFilter(query, key)
   const formattedFilter = formattedFilters[key]
 
-  if (formattedFilter) {
-    return <>{formattedFilter} {type} <b>{value}</b></>
+  if (key === "props") {
+    const [[propKey, _propValue]] = Object.entries(query.filters['props'])
+    return <>props.{propKey} {type} {clauses.map(({label}) => <b key={label}>{label}</b>).reduce((prev, curr) => [prev, ' or ', curr])} </>
+  } else if (formattedFilter) {
+    return <>{formattedFilter} {type} {clauses.map(({label}) => <b key={label}>{label}</b>).reduce((prev, curr) => [prev, ' or ', curr])} </>
   }
 
   throw new Error(`Unknown filter: ${key}`)
@@ -92,7 +59,7 @@ function renderDropdownFilter(site, history, [key, value], query) {
           title={`Edit filter: ${formattedFilters[key]}`}
           to={{ pathname: `/${encodeURIComponent(site.domain)}/filter/${filterGroupForFilter(key)}`, search: window.location.search }}
           className="group flex w-full justify-between items-center"
-          style={{width: 'calc(100% - 1.5rem)'}}
+          style={{ width: 'calc(100% - 1.5rem)' }}
         >
           <span className="inline-block w-full truncate">{filterText(key, value, query)}</span>
           <PencilSquareIcon className="w-4 h-4 ml-1 cursor-pointer group-hover:text-indigo-700 dark:group-hover:text-indigo-500" />
@@ -123,7 +90,7 @@ function filterDropdownOption(site, option) {
   )
 }
 
-function DropdownContent({history, site, query, wrapped}) {
+function DropdownContent({ history, site, query, wrapped }) {
   const [addingFilter, setAddingFilter] = useState(false);
 
   if (wrapped === 0 || addingFilter) {
@@ -191,7 +158,7 @@ class Filters extends React.Component {
   }
 
   handleKeyup(e) {
-    const {query, history} = this.props
+    const { query, history } = this.props
 
     if (e.ctrlKey || e.metaKey || e.altKey) return
 
@@ -201,7 +168,7 @@ class Filters extends React.Component {
   }
 
   handleResize() {
-    this.setState({ viewport: window.innerWidth || 639});
+    this.setState({ viewport: window.innerWidth || 639 });
   }
 
   // Checks if the filter container is wrapping items
@@ -325,8 +292,8 @@ class Filters extends React.Component {
   render() {
     return (
       <>
-        { this.renderFilterList() }
-        { this.renderDropDown() }
+        {this.renderFilterList()}
+        {this.renderDropDown()}
       </>
     )
   }

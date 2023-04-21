@@ -4,7 +4,7 @@ defmodule PlausibleWeb.StatsController do
 
   The stats dashboards are currently the only part of the app that uses client-side
   rendering. Since the dashboards are heavily interactive, they are built with React
-  which is an appropraite choice for highly interactive browser UIs.
+  which is an appropriate choice for highly interactive browser UIs.
 
   <div class="mermaid">
   sequenceDiagram
@@ -36,7 +36,7 @@ defmodule PlausibleWeb.StatsController do
       3.1 No client-side caching has been implemented yet. This is still theoretical. See https://github.com/plausible/analytics/discussions/1278
       3.2 This is a big potential opportunity, because analytics data is mostly immutable. Clients can cache all historical data.
     5. Since frontend rendering & navigation is harder to build and maintain than regular server-rendered HTML, we don't use SPA-style rendering anywhere else
-    .The only place currently where the benefits outweight the costs is the dashboard.
+    .The only place currently where the benefits outweigh the costs is the dashboard.
   """
 
   use PlausibleWeb, :controller
@@ -46,7 +46,7 @@ defmodule PlausibleWeb.StatsController do
   alias Plausible.Stats.{Query, Filters}
   alias PlausibleWeb.Api
 
-  plug PlausibleWeb.AuthorizeSiteAccess when action in [:stats, :csv_export]
+  plug(PlausibleWeb.AuthorizeSiteAccess when action in [:stats, :csv_export])
 
   def stats(%{assigns: %{site: site}} = conn, _params) do
     stats_start_date = Plausible.Sites.stats_start_date(site)
@@ -95,46 +95,67 @@ defmodule PlausibleWeb.StatsController do
     site = conn.assigns[:site]
     query = Query.from(site, params) |> Filters.add_prefix()
 
-    metrics = [:visitors, :pageviews, :bounce_rate, :visit_duration]
+    metrics =
+      cond do
+        query.filters["event:goal"] ->
+          [:visitors]
+
+        FunWithFlags.enabled?(:visits_metric, for: conn.assigns[:current_user]) ->
+          [:visitors, :pageviews, :visits, :views_per_visit, :bounce_rate, :visit_duration]
+
+        true ->
+          [:visitors, :pageviews, :bounce_rate, :visit_duration]
+      end
+
     graph = Plausible.Stats.timeseries(site, query, metrics)
-    headers = [:date | metrics]
+    columns = [:date | metrics]
+
+    column_headers =
+      if query.filters["event:goal"] do
+        [:date, :unique_conversions]
+      else
+        columns
+      end
 
     visitors =
-      Enum.map(graph, fn row -> Enum.map(headers, &row[&1]) end)
-      |> (fn data -> [headers | data] end).()
+      Enum.map(graph, fn row -> Enum.map(columns, &row[&1]) end)
+      |> (fn data -> [column_headers | data] end).()
       |> CSV.encode()
       |> Enum.join()
 
     filename =
-      "Plausible export #{params["domain"]} #{Timex.format!(query.date_range.first, "{ISOdate} ")} to #{Timex.format!(query.date_range.last, "{ISOdate} ")}.zip"
+      'Plausible export #{params["domain"]} #{Timex.format!(query.date_range.first, "{ISOdate} ")} to #{Timex.format!(query.date_range.last, "{ISOdate} ")}.zip'
 
     params = Map.merge(params, %{"limit" => "300", "csv" => "True", "detailed" => "True"})
     limited_params = Map.merge(params, %{"limit" => "100"})
 
-    csvs = [
-      {'sources.csv', fn -> Api.StatsController.sources(conn, params) end},
-      {'utm_mediums.csv', fn -> Api.StatsController.utm_mediums(conn, params) end},
-      {'utm_sources.csv', fn -> Api.StatsController.utm_sources(conn, params) end},
-      {'utm_campaigns.csv', fn -> Api.StatsController.utm_campaigns(conn, params) end},
-      {'utm_contents.csv', fn -> Api.StatsController.utm_contents(conn, params) end},
-      {'utm_terms.csv', fn -> Api.StatsController.utm_terms(conn, params) end},
-      {'pages.csv', fn -> Api.StatsController.pages(conn, limited_params) end},
-      {'entry_pages.csv', fn -> Api.StatsController.entry_pages(conn, params) end},
-      {'exit_pages.csv', fn -> Api.StatsController.exit_pages(conn, limited_params) end},
-      {'countries.csv', fn -> Api.StatsController.countries(conn, params) end},
-      {'regions.csv', fn -> Api.StatsController.regions(conn, params) end},
-      {'cities.csv', fn -> Api.StatsController.cities(conn, params) end},
-      {'browsers.csv', fn -> Api.StatsController.browsers(conn, params) end},
-      {'operating_systems.csv', fn -> Api.StatsController.operating_systems(conn, params) end},
-      {'devices.csv', fn -> Api.StatsController.screen_sizes(conn, params) end},
-      {'conversions.csv', fn -> Api.StatsController.conversions(conn, params) end},
-      {'prop_breakdown.csv', fn -> Api.StatsController.all_props_breakdown(conn, params) end}
-    ]
+    csvs = %{
+      'sources.csv' => fn -> Api.StatsController.sources(conn, params) end,
+      'utm_mediums.csv' => fn -> Api.StatsController.utm_mediums(conn, params) end,
+      'utm_sources.csv' => fn -> Api.StatsController.utm_sources(conn, params) end,
+      'utm_campaigns.csv' => fn -> Api.StatsController.utm_campaigns(conn, params) end,
+      'utm_contents.csv' => fn -> Api.StatsController.utm_contents(conn, params) end,
+      'utm_terms.csv' => fn -> Api.StatsController.utm_terms(conn, params) end,
+      'pages.csv' => fn -> Api.StatsController.pages(conn, limited_params) end,
+      'entry_pages.csv' => fn -> Api.StatsController.entry_pages(conn, params) end,
+      'exit_pages.csv' => fn -> Api.StatsController.exit_pages(conn, limited_params) end,
+      'countries.csv' => fn -> Api.StatsController.countries(conn, params) end,
+      'regions.csv' => fn -> Api.StatsController.regions(conn, params) end,
+      'cities.csv' => fn -> Api.StatsController.cities(conn, params) end,
+      'browsers.csv' => fn -> Api.StatsController.browsers(conn, params) end,
+      'operating_systems.csv' => fn -> Api.StatsController.operating_systems(conn, params) end,
+      'devices.csv' => fn -> Api.StatsController.screen_sizes(conn, params) end,
+      'conversions.csv' => fn -> Api.StatsController.conversions(conn, params) end,
+      'prop_breakdown.csv' => fn -> Api.StatsController.all_props_breakdown(conn, params) end
+    }
+
+    csv_values =
+      Map.values(csvs)
+      |> Plausible.ClickhouseRepo.parallel_tasks()
 
     csvs =
-      csvs
-      |> Enum.map(fn {file, task} -> {file, Task.async(task)} end)
-      |> Enum.map(fn {file, task} -> {file, Task.await(task)} end)
+      Map.keys(csvs)
+      |> Enum.zip(csv_values)
 
     csvs = [{'visitors.csv', visitors} | csvs]
 
@@ -181,9 +202,10 @@ defmodule PlausibleWeb.StatsController do
   def shared_link(conn, %{"domain" => slug}) do
     shared_link =
       Repo.one(
-        from l in Plausible.Site.SharedLink,
+        from(l in Plausible.Site.SharedLink,
           where: l.slug == ^slug and l.inserted_at < ^@old_format_deprecation_date,
           preload: :site
+        )
       )
 
     if shared_link do
@@ -217,12 +239,13 @@ defmodule PlausibleWeb.StatsController do
 
   defp find_shared_link(domain, auth) do
     link_query =
-      from link in Plausible.Site.SharedLink,
+      from(link in Plausible.Site.SharedLink,
         inner_join: site in assoc(link, :site),
         where: link.slug == ^auth,
         where: site.domain == ^domain,
         limit: 1,
         preload: [site: site]
+      )
 
     case Repo.one(link_query) do
       %Plausible.Site.SharedLink{password_hash: hash} = link when not is_nil(hash) ->
@@ -306,19 +329,21 @@ defmodule PlausibleWeb.StatsController do
 
   defp get_flags(user) do
     %{
-      custom_dimension_filter: FunWithFlags.enabled?(:custom_dimension_filter, for: user)
+      custom_dimension_filter: FunWithFlags.enabled?(:custom_dimension_filter, for: user),
+      visits_metric: FunWithFlags.enabled?(:visits_metric, for: user),
+      views_per_visit_metric: FunWithFlags.enabled?(:views_per_visit_metric, for: user),
+      comparisons: FunWithFlags.enabled?(:comparisons, for: user)
     }
   end
 
   defp is_dbip() do
-    if Application.get_env(:plausible, :is_selfhost) do
-      case Geolix.metadata(where: :geolocation) do
-        %{database_type: type} ->
+    is_or_nil =
+      if Application.get_env(:plausible, :is_selfhost) do
+        if type = Plausible.Geo.database_type() do
           String.starts_with?(type, "DBIP")
-
-        _ ->
-          false
+        end
       end
-    end
+
+    !!is_or_nil
   end
 end

@@ -1,13 +1,13 @@
 defmodule PlausibleWeb.StatsControllerTest do
   use PlausibleWeb.ConnCase, async: true
   use Plausible.Repo
-  import Plausible.TestUtils
 
   describe "GET /:website - anonymous user" do
     test "public site - shows site stats", %{conn: conn} do
-      insert(:site, domain: "public-site.io", public: true)
+      site = insert(:site, public: true)
+      populate_stats(site, [build(:pageview)])
 
-      conn = get(conn, "/public-site.io")
+      conn = get(conn, "/#{site.domain}")
       assert html_response(conn, 200) =~ "stats-react-container"
     end
 
@@ -28,6 +28,7 @@ defmodule PlausibleWeb.StatsControllerTest do
     setup [:create_user, :log_in, :create_site]
 
     test "can view stats of a website I've created", %{conn: conn, site: site} do
+      populate_stats(site, [build(:pageview)])
       conn = get(conn, "/" <> site.domain)
       assert html_response(conn, 200) =~ "stats-react-container"
     end
@@ -35,7 +36,7 @@ defmodule PlausibleWeb.StatsControllerTest do
     test "shows locked page if page is locked", %{conn: conn, user: user} do
       locked_site = insert(:site, locked: true, members: [user])
       conn = get(conn, "/" <> locked_site.domain)
-      assert html_response(conn, 200) =~ "Site locked"
+      assert html_response(conn, 200) =~ "Dashboard locked"
     end
 
     test "can not view stats of someone else's website", %{conn: conn} do
@@ -103,6 +104,40 @@ defmodule PlausibleWeb.StatsControllerTest do
       conn = get(conn, "/" <> site.domain <> "/export?date=2021-10-20")
       assert_zip(conn, "30d")
     end
+
+    test "exports data grouped by interval", %{conn: conn, site: site} do
+      populate_exported_stats(site)
+      conn = get(conn, "/" <> site.domain <> "/export?date=2021-10-20&period=30d&interval=week")
+
+      assert response = response(conn, 200)
+      {:ok, zip} = :zip.unzip(response, [:memory])
+
+      {_filename, visitors} =
+        Enum.find(zip, fn {filename, _data} -> filename == 'visitors.csv' end)
+
+      parsed_csv =
+        visitors
+        |> String.split("\r\n")
+        |> Enum.map(&String.split(&1, ","))
+
+      assert parsed_csv == [
+               [
+                 "date",
+                 "visitors",
+                 "pageviews",
+                 "visits",
+                 "views_per_visit",
+                 "bounce_rate",
+                 "visit_duration"
+               ],
+               ["2021-09-20", "1", "1", "1", "1.0", "100", "0"],
+               ["2021-09-27", "0", "0", "0", "0.0", "", ""],
+               ["2021-10-04", "0", "0", "0", "0.0", "", ""],
+               ["2021-10-11", "0", "0", "0", "0.0", "", ""],
+               ["2021-10-18", "3", "3", "3", "1.0", "67", "20"],
+               [""]
+             ]
+    end
   end
 
   describe "GET /:website/export - via shared link" do
@@ -166,7 +201,8 @@ defmodule PlausibleWeb.StatsControllerTest do
         subdivision1_code: "EE-37",
         city_geoname_id: 588_409,
         pathname: "/",
-        timestamp: Timex.shift(~N[2021-10-20 12:00:00], minutes: -1),
+        timestamp:
+          Timex.shift(~N[2021-10-20 12:00:00], minutes: -1) |> NaiveDateTime.truncate(:second),
         referrer_source: "Google",
         user_id: 123
       ),
@@ -175,7 +211,8 @@ defmodule PlausibleWeb.StatsControllerTest do
         subdivision1_code: "EE-37",
         city_geoname_id: 588_409,
         pathname: "/some-other-page",
-        timestamp: Timex.shift(~N[2021-10-20 12:00:00], minutes: -2),
+        timestamp:
+          Timex.shift(~N[2021-10-20 12:00:00], minutes: -2) |> NaiveDateTime.truncate(:second),
         referrer_source: "Google",
         user_id: 123
       ),
@@ -186,23 +223,27 @@ defmodule PlausibleWeb.StatsControllerTest do
         utm_source: "google",
         utm_content: "content",
         utm_term: "term",
-        timestamp: Timex.shift(~N[2021-10-20 12:00:00], days: -1),
+        timestamp:
+          Timex.shift(~N[2021-10-20 12:00:00], days: -1) |> NaiveDateTime.truncate(:second),
         browser: "ABrowserName"
       ),
       build(:pageview,
-        timestamp: Timex.shift(~N[2021-10-20 12:00:00], months: -1),
+        timestamp:
+          Timex.shift(~N[2021-10-20 12:00:00], months: -1) |> NaiveDateTime.truncate(:second),
         country_code: "EE",
         browser: "ABrowserName"
       ),
       build(:pageview,
-        timestamp: Timex.shift(~N[2021-10-20 12:00:00], months: -5),
+        timestamp:
+          Timex.shift(~N[2021-10-20 12:00:00], months: -5) |> NaiveDateTime.truncate(:second),
         utm_campaign: "ads",
         country_code: "EE",
         referrer_source: "Google",
         browser: "ABrowserName"
       ),
       build(:event,
-        timestamp: Timex.shift(~N[2021-10-20 12:00:00], days: -1),
+        timestamp:
+          Timex.shift(~N[2021-10-20 12:00:00], days: -1) |> NaiveDateTime.truncate(:second),
         name: "Signup",
         "meta.key": ["variant"],
         "meta.value": ["A"]
@@ -260,7 +301,7 @@ defmodule PlausibleWeb.StatsControllerTest do
 
       conn = get(conn, "/share/test-site.com/?auth=#{link.slug}")
 
-      assert html_response(conn, 200) =~ "Site locked"
+      assert html_response(conn, 200) =~ "Dashboard locked"
       refute String.contains?(html_response(conn, 200), "Back to my sites")
     end
 

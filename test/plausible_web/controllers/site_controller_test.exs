@@ -3,7 +3,10 @@ defmodule PlausibleWeb.SiteControllerTest do
   use Plausible.Repo
   use Bamboo.Test
   use Oban.Testing, repo: Plausible.Repo
-  import Plausible.TestUtils
+
+  import ExUnit.CaptureLog
+  import Mox
+  setup :verify_on_exit!
 
   describe "GET /sites/new" do
     setup [:create_user, :log_in]
@@ -38,10 +41,12 @@ defmodule PlausibleWeb.SiteControllerTest do
     end
 
     test "lists all of your sites with last 24h visitors", %{conn: conn, user: user} do
-      insert(:site, members: [user], domain: "test-site.com")
+      site = insert(:site, members: [user])
+
+      populate_stats(site, [build(:pageview), build(:pageview), build(:pageview)])
       conn = get(conn, "/sites")
 
-      assert html_response(conn, 200) =~ "test-site.com"
+      assert html_response(conn, 200) =~ site.domain
       assert html_response(conn, 200) =~ "<b>3</b> visitors in last 24h"
     end
 
@@ -102,7 +107,19 @@ defmodule PlausibleWeb.SiteControllerTest do
         })
 
       assert redirected_to(conn) == "/example.com/snippet"
-      assert Repo.exists?(Plausible.Site, domain: "example.com")
+      assert Repo.get_by(Plausible.Site, domain: "example.com")
+    end
+
+    test "fails to create the site if only http:// provided", %{conn: conn} do
+      conn =
+        post(conn, "/sites", %{
+          "site" => %{
+            "domain" => "http://",
+            "timezone" => "Europe/London"
+          }
+        })
+
+      assert html_response(conn, 200) =~ "can&#39;t be blank"
     end
 
     test "starts trial if user does not have trial yet", %{conn: conn, user: user} do
@@ -157,12 +174,16 @@ defmodule PlausibleWeb.SiteControllerTest do
       conn =
         post(conn, "/sites", %{
           "site" => %{
-            "domain" => "example.com",
+            "domain" => "over-limit.example.com",
             "timezone" => "Europe/London"
           }
         })
 
-      assert conn.status == 400
+      assert html = html_response(conn, 200)
+      assert html =~ "Upgrade required"
+      assert html =~ "Your account is limited to 3 sites"
+      assert html =~ "Please contact support"
+      refute Repo.get_by(Plausible.Site, domain: "over-limit.example.com")
     end
 
     test "allows accounts registered before 2021-05-05 to go over the limit", %{
@@ -187,7 +208,7 @@ defmodule PlausibleWeb.SiteControllerTest do
         })
 
       assert redirected_to(conn) == "/example.com/snippet"
-      assert Repo.exists?(Plausible.Site, domain: "example.com")
+      assert Repo.get_by(Plausible.Site, domain: "example.com")
     end
 
     test "allows enterprise accounts to create unlimited sites", %{
@@ -210,7 +231,7 @@ defmodule PlausibleWeb.SiteControllerTest do
         })
 
       assert redirected_to(conn) == "/example.com/snippet"
-      assert Repo.exists?(Plausible.Site, domain: "example.com")
+      assert Repo.get_by(Plausible.Site, domain: "example.com")
     end
 
     test "cleans up the url", %{conn: conn} do
@@ -223,7 +244,7 @@ defmodule PlausibleWeb.SiteControllerTest do
         })
 
       assert redirected_to(conn) == "/example.com/snippet"
-      assert Repo.exists?(Plausible.Site, domain: "example.com")
+      assert Repo.get_by(Plausible.Site, domain: "example.com")
     end
 
     test "renders form again when domain is missing", %{conn: conn} do
@@ -261,7 +282,24 @@ defmodule PlausibleWeb.SiteControllerTest do
         })
 
       assert html_response(conn, 200) =~
-               "This domain has already been taken. Perhaps one of your team members registered it? If that&#39;s not the case, please contact support@plausible.io"
+               "This domain cannot be registered. Perhaps one of your colleagues registered it?"
+    end
+
+    test "renders form again when domain was changed from elsewhere", %{conn: conn} do
+      :site
+      |> insert(domain: "example.com")
+      |> Plausible.Site.Domain.change("new.example.com")
+
+      conn =
+        post(conn, "/sites", %{
+          "site" => %{
+            "domain" => "example.com",
+            "timezone" => "Europe/London"
+          }
+        })
+
+      assert html_response(conn, 200) =~
+               "This domain cannot be registered. Perhaps one of your colleagues registered it?"
     end
   end
 
@@ -271,17 +309,24 @@ defmodule PlausibleWeb.SiteControllerTest do
     test "shows snippet", %{conn: conn, site: site} do
       conn = get(conn, "/#{site.domain}/snippet")
 
-      assert html_response(conn, 200) =~ "Add javascript snippet"
+      assert html_response(conn, 200) =~ "Add JavaScript snippet"
     end
   end
 
   describe "GET /:website/settings/general" do
     setup [:create_user, :log_in, :create_site]
 
+    setup_patch_env(:google, client_id: "some", api_url: "https://www.googleapis.com")
+
     test "shows settings form", %{conn: conn, site: site} do
       conn = get(conn, "/#{site.domain}/settings/general")
+      resp = html_response(conn, 200)
 
-      assert html_response(conn, 200) =~ "General information"
+      assert resp =~ "Site timezone"
+      assert resp =~ "Data Import from Google Analytics"
+      assert resp =~ "https://accounts.google.com/o/oauth2/v2/auth?"
+      assert resp =~ "analytics.readonly"
+      refute resp =~ "webmasters.readonly"
     end
   end
 
@@ -326,6 +371,25 @@ defmodule PlausibleWeb.SiteControllerTest do
       assert updated.public
       assert redirected_to(conn, 302) == "/#{site.domain}/settings/visibility"
     end
+
+    test "fails to make site public with insufficient permissions", %{conn: conn, user: user} do
+      site = insert(:site, memberships: [build(:site_membership, user: user, role: :viewer)])
+      conn = post(conn, "/sites/#{site.domain}/make-public")
+      assert conn.status == 404
+      refute Repo.get(Plausible.Site, site.id).public
+    end
+
+    test "fails to make foreign site public", %{conn: my_conn, user: me} do
+      _my_site = insert(:site, memberships: [build(:site_membership, user: me, role: :owner)])
+
+      other_user = insert(:user)
+      other_site = insert(:site)
+      insert(:site_membership, site: other_site, user: other_user, role: "owner")
+
+      my_conn = post(my_conn, "/sites/#{other_site.domain}/make-public")
+      assert my_conn.status == 404
+      refute Repo.get(Plausible.Site, other_site.id).public
+    end
   end
 
   describe "POST /sites/:website/make-private" do
@@ -352,6 +416,33 @@ defmodule PlausibleWeb.SiteControllerTest do
       delete(conn, "/#{site.domain}")
 
       refute Repo.exists?(from s in Plausible.Site, where: s.id == ^site.id)
+    end
+
+    test "fails to delete a site with insufficient permissions", %{conn: conn, user: user} do
+      site = insert(:site, memberships: [build(:site_membership, user: user, role: :viewer)])
+      insert(:google_auth, user: user, site: site)
+      insert(:custom_domain, site: site)
+      insert(:spike_notification, site: site)
+
+      conn = delete(conn, "/#{site.domain}")
+
+      assert conn.status == 404
+      assert Repo.exists?(from s in Plausible.Site, where: s.id == ^site.id)
+    end
+
+    test "fails to delete a foreign site", %{conn: my_conn, user: me} do
+      _my_site = insert(:site, memberships: [build(:site_membership, user: me, role: :owner)])
+
+      other_user = insert(:user)
+      other_site = insert(:site)
+      insert(:site_membership, site: other_site, user: other_user, role: "owner")
+      insert(:google_auth, user: other_user, site: other_site)
+      insert(:custom_domain, site: other_site)
+      insert(:spike_notification, site: other_site)
+
+      my_conn = delete(my_conn, "/#{other_site.domain}")
+      assert my_conn.status == 404
+      assert Repo.exists?(from s in Plausible.Site, where: s.id == ^other_site.id)
     end
   end
 
@@ -381,6 +472,141 @@ defmodule PlausibleWeb.SiteControllerTest do
 
       refute Repo.exists?(Plausible.Site.GoogleAuth)
       assert redirected_to(conn, 302) == "/#{site.domain}/settings/search-console"
+    end
+
+    test "fails to delete associated google auth from the outside", %{
+      conn: conn,
+      user: user
+    } do
+      other_site = insert(:site)
+      insert(:google_auth, user: user, site: other_site)
+      conn = delete(conn, "/#{other_site.domain}/settings/google-search")
+
+      assert conn.status == 404
+      assert Repo.exists?(Plausible.Site.GoogleAuth)
+    end
+  end
+
+  describe "GET /:website/settings/search-console for self-hosting" do
+    setup [:create_user, :log_in, :create_site]
+
+    test "display search console settings", %{conn: conn, site: site} do
+      conn = get(conn, "/#{site.domain}/settings/search-console")
+      resp = html_response(conn, 200)
+      assert resp =~ "An extra step is needed"
+      assert resp =~ "Google Search Console integration"
+      assert resp =~ "self-hosting-configuration"
+    end
+  end
+
+  describe "GET /:website/settings/search-console" do
+    setup [:create_user, :log_in, :create_site]
+
+    setup_patch_env(:google, client_id: "some", api_url: "https://www.googleapis.com")
+
+    setup %{site: site, user: user} = context do
+      insert(:google_auth, user: user, site: site, property: "sc-domain:#{site.domain}")
+      context
+    end
+
+    test "displays Continue with Google link", %{conn: conn, user: user} do
+      site = insert(:site, domain: "notconnectedyet.example.com", members: [user])
+
+      conn = get(conn, "/#{site.domain}/settings/search-console")
+      resp = html_response(conn, 200)
+      assert resp =~ "Continue with Google"
+      assert resp =~ "https://accounts.google.com/o/oauth2/v2/auth?"
+      assert resp =~ "webmasters.readonly"
+      refute resp =~ "analytics.readonly"
+    end
+
+    test "displays appropriate error in case of google account `google_auth_error`", %{
+      conn: conn,
+      site: site
+    } do
+      expect(
+        Plausible.HTTPClient.Mock,
+        :get,
+        fn
+          "https://www.googleapis.com/webmasters/v3/sites",
+          [{"Content-Type", "application/json"}, {"Authorization", "Bearer 123"}] ->
+            {:error, %{reason: %Finch.Response{status: Enum.random([401, 403])}}}
+        end
+      )
+
+      conn = get(conn, "/#{site.domain}/settings/search-console")
+      resp = html_response(conn, 200)
+      assert resp =~ "Your Search Console account hasn't been connected successfully"
+      assert resp =~ "Please unlink your Google account and try linking it again"
+    end
+
+    test "displays docs link error in case of `invalid_grant`", %{
+      conn: conn,
+      site: site
+    } do
+      expect(
+        Plausible.HTTPClient.Mock,
+        :get,
+        fn
+          "https://www.googleapis.com/webmasters/v3/sites",
+          [{"Content-Type", "application/json"}, {"Authorization", "Bearer 123"}] ->
+            {:error, %{reason: %Finch.Response{status: 400, body: %{"error" => "invalid_grant"}}}}
+        end
+      )
+
+      conn = get(conn, "/#{site.domain}/settings/search-console")
+      resp = html_response(conn, 200)
+
+      assert resp =~
+               "https://plausible.io/docs/google-search-console-integration#i-get-the-invalid-grant-error"
+    end
+
+    test "displays generic error in case of random error code returned by google", %{
+      conn: conn,
+      site: site
+    } do
+      expect(
+        Plausible.HTTPClient.Mock,
+        :get,
+        fn
+          "https://www.googleapis.com/webmasters/v3/sites",
+          [{"Content-Type", "application/json"}, {"Authorization", "Bearer 123"}] ->
+            {:error, %{reason: %Finch.Response{status: 503, body: %{"error" => "some_error"}}}}
+        end
+      )
+
+      conn = get(conn, "/#{site.domain}/settings/search-console")
+      resp = html_response(conn, 200)
+
+      assert resp =~ "Something went wrong, but looks temporary"
+      assert resp =~ "try re-linking your Google account"
+    end
+
+    test "displays generic error and logs a message, in case of random HTTP failure calling google",
+         %{
+           conn: conn,
+           site: site
+         } do
+      expect(
+        Plausible.HTTPClient.Mock,
+        :get,
+        fn
+          "https://www.googleapis.com/webmasters/v3/sites",
+          [{"Content-Type", "application/json"}, {"Authorization", "Bearer 123"}] ->
+            {:error, :nxdomain}
+        end
+      )
+
+      log =
+        capture_log(fn ->
+          conn = get(conn, "/#{site.domain}/settings/search-console")
+          resp = html_response(conn, 200)
+
+          assert resp =~ "Something went wrong, but looks temporary"
+          assert resp =~ "try re-linking your Google account"
+        end)
+
+      assert log =~ "Google Analytics: failed to list sites: :nxdomain"
     end
   end
 
@@ -433,13 +659,23 @@ defmodule PlausibleWeb.SiteControllerTest do
   describe "DELETE /:website/goals/:id" do
     setup [:create_user, :log_in, :create_site]
 
-    test "lists goals for the site", %{conn: conn, site: site} do
+    test "deletes goal", %{conn: conn, site: site} do
       goal = insert(:goal, domain: site.domain, event_name: "Custom event")
 
       conn = delete(conn, "/#{site.domain}/goals/#{goal.id}")
 
       assert Repo.aggregate(Plausible.Goal, :count, :id) == 0
       assert redirected_to(conn, 302) == "/#{site.domain}/settings/goals"
+    end
+
+    test "fails to delete goal for a foreign site", %{conn: conn, site: site} do
+      another_site = insert(:site)
+      goal = insert(:goal, domain: another_site.domain, event_name: "Custom event")
+
+      conn = delete(conn, "/#{site.domain}/goals/#{goal.id}")
+
+      assert Repo.aggregate(Plausible.Goal, :count, :id) == 1
+      assert get_flash(conn, :error) == "Could not find goal"
     end
   end
 
@@ -468,6 +704,15 @@ defmodule PlausibleWeb.SiteControllerTest do
 
       refute Repo.get_by(Plausible.Site.WeeklyReport, site_id: site.id)
     end
+
+    test "fails to delete the weekly report record for a foreign site", %{conn: conn} do
+      site = insert(:site)
+      insert(:weekly_report, site: site)
+
+      post(conn, "/sites/#{site.domain}/weekly-report/disable")
+
+      assert Repo.get_by(Plausible.Site.WeeklyReport, site_id: site.id)
+    end
   end
 
   describe "POST /sites/:website/weekly-report/recipients" do
@@ -493,6 +738,20 @@ defmodule PlausibleWeb.SiteControllerTest do
 
       report = Repo.get_by(Plausible.Site.WeeklyReport, site_id: site.id)
       assert report.recipients == []
+    end
+
+    test "fails to remove a recipient from the weekly report in a foreign website", %{conn: conn} do
+      site = insert(:site)
+      insert(:weekly_report, site: site, recipients: ["recipient@email.com"])
+
+      conn = delete(conn, "/sites/#{site.domain}/weekly-report/recipients/recipient@email.com")
+      assert conn.status == 404
+
+      conn = delete(conn, "/sites/#{site.domain}/weekly-report/recipients/recipient%40email.com")
+      assert conn.status == 404
+
+      report = Repo.get_by(Plausible.Site.WeeklyReport, site_id: site.id)
+      assert [_] = report.recipients
     end
   end
 
@@ -546,6 +805,22 @@ defmodule PlausibleWeb.SiteControllerTest do
 
       report = Repo.get_by(Plausible.Site.MonthlyReport, site_id: site.id)
       assert report.recipients == []
+    end
+
+    test "fails to remove a recipient from the monthly report in a foreign website", %{
+      conn: conn
+    } do
+      site = insert(:site)
+      insert(:monthly_report, site: site, recipients: ["recipient@email.com"])
+
+      conn = delete(conn, "/sites/#{site.domain}/monthly-report/recipients/recipient@email.com")
+      assert conn.status == 404
+
+      conn = delete(conn, "/sites/#{site.domain}/monthly-report/recipients/recipient%40email.com")
+      assert conn.status == 404
+
+      report = Repo.get_by(Plausible.Site.MonthlyReport, site_id: site.id)
+      assert [_] = report.recipients
     end
   end
 
@@ -630,6 +905,26 @@ defmodule PlausibleWeb.SiteControllerTest do
       report = Repo.get_by(Plausible.Site.SpikeNotification, site_id: site.id)
       assert report.recipients == []
     end
+
+    test "fails to remove a recipient from the spike notification in a foreign website", %{
+      conn: conn
+    } do
+      site = insert(:site)
+      insert(:spike_notification, site: site, recipients: ["recipient@email.com"])
+
+      conn =
+        delete(conn, "/sites/#{site.domain}/spike-notification/recipients/recipient@email.com")
+
+      assert conn.status == 404
+
+      conn =
+        delete(conn, "/sites/#{site.domain}/spike-notification/recipients/recipient%40email.com")
+
+      assert conn.status == 404
+
+      report = Repo.get_by(Plausible.Site.SpikeNotification, site_id: site.id)
+      assert [_] = report.recipients
+    end
   end
 
   describe "GET /sites/:website/shared-links/new" do
@@ -700,25 +995,52 @@ defmodule PlausibleWeb.SiteControllerTest do
   describe "DELETE /sites/:website/shared-links/:slug" do
     setup [:create_user, :log_in, :create_site]
 
-    test "shows form for new shared link", %{conn: conn, site: site} do
+    test "deletes shared link", %{conn: conn, site: site} do
       link = insert(:shared_link, site: site)
 
       conn = delete(conn, "/sites/#{site.domain}/shared-links/#{link.slug}")
 
       refute Repo.one(Plausible.Site.SharedLink)
       assert redirected_to(conn, 302) =~ "/#{site.domain}/settings"
+      assert get_flash(conn, :success) == "Shared Link deleted"
+    end
+
+    test "fails to delete shared link from the outside", %{conn: conn, site: site} do
+      other_site = insert(:site)
+      link = insert(:shared_link, site: other_site)
+
+      conn = delete(conn, "/sites/#{site.domain}/shared-links/#{link.slug}")
+
+      assert Repo.one(Plausible.Site.SharedLink)
+      assert redirected_to(conn, 302) =~ "/#{site.domain}/settings"
+      assert get_flash(conn, :error) == "Could not find Shared Link"
     end
   end
 
   describe "DELETE sites/:website/custom-domains/:id" do
     setup [:create_user, :log_in, :create_site]
 
-    test "lists goals for the site", %{conn: conn, site: site} do
+    test "deletes custom domain", %{conn: conn, site: site} do
       domain = insert(:custom_domain, site: site)
 
-      delete(conn, "/sites/#{site.domain}/custom-domains/#{domain.id}")
+      conn = delete(conn, "/sites/#{site.domain}/custom-domains/#{domain.id}")
+      assert get_flash(conn, :success) == "Custom domain deleted successfully"
 
       assert Repo.aggregate(Plausible.Site.CustomDomain, :count, :id) == 0
+    end
+
+    test "fails to delete custom domain not owning it", %{conn: conn, site: site} do
+      _og_domain = insert(:custom_domain, site: site)
+
+      foreign_site = insert(:site)
+      foreign_domain = insert(:custom_domain, site: foreign_site)
+
+      assert Repo.aggregate(Plausible.Site.CustomDomain, :count, :id) == 2
+
+      conn = delete(conn, "/sites/#{site.domain}/custom-domains/#{foreign_domain.id}")
+      assert get_flash(conn, :error) == "Failed to delete custom domain"
+
+      assert Repo.aggregate(Plausible.Site.CustomDomain, :count, :id) == 2
     end
   end
 
@@ -726,25 +1048,14 @@ defmodule PlausibleWeb.SiteControllerTest do
     setup [:create_user, :log_in, :create_new_site]
 
     test "lists Google Analytics views", %{conn: conn, site: site} do
-      bypass = Bypass.open()
-
-      Bypass.expect_once(
-        bypass,
-        "GET",
-        "/analytics/v3/management/accounts/~all/webproperties/~all/profiles",
-        fn conn ->
-          response_body = File.read!("fixture/ga_list_views.json")
-
-          conn
-          |> Plug.Conn.put_resp_header("content-type", "application/json")
-          |> Plug.Conn.resp(200, response_body)
+      expect(
+        Plausible.HTTPClient.Mock,
+        :get,
+        fn _url, _body ->
+          body = "fixture/ga_list_views.json" |> File.read!() |> Jason.decode!()
+          {:ok, %Finch.Response{body: body, status: 200}}
         end
       )
-
-      :plausible
-      |> Application.get_env(:google)
-      |> Keyword.put(:api_url, "http://0.0.0.0:#{bypass.port}")
-      |> then(&Application.put_env(:plausible, :google, &1))
 
       response =
         conn
@@ -849,6 +1160,118 @@ defmodule PlausibleWeb.SiteControllerTest do
       delete(conn, "/#{site.domain}/settings/forget-imported")
 
       assert Repo.reload(job).state == "cancelled"
+    end
+  end
+
+  describe "domain change" do
+    setup [:create_user, :log_in, :create_site]
+
+    @tag :v2_only
+    test "shows domain change in the settings form", %{conn: conn, site: site} do
+      conn = get(conn, Routes.site_path(conn, :settings_general, site.domain))
+      resp = html_response(conn, 200)
+
+      assert resp =~ "Site domain"
+      assert resp =~ "Change domain"
+      assert resp =~ Routes.site_path(conn, :change_domain, site.domain)
+    end
+
+    @tag :v2_only
+    test "domain change form renders", %{conn: conn, site: site} do
+      conn = get(conn, Routes.site_path(conn, :change_domain, site.domain))
+      resp = html_response(conn, 200)
+      assert resp =~ Routes.site_path(conn, :change_domain_submit, site.domain)
+
+      assert resp =~
+               "Once you change your domain, you must update the JavaScript snippet on your site within 72 hours"
+    end
+
+    @tag :v2_only
+    test "domain change form submission when no change is made", %{conn: conn, site: site} do
+      conn =
+        put(conn, Routes.site_path(conn, :change_domain_submit, site.domain), %{
+          "site" => %{"domain" => site.domain}
+        })
+
+      resp = html_response(conn, 200)
+      assert resp =~ "New domain must be different than the current one"
+    end
+
+    @tag :v2_only
+    test "domain change form submission to an existing domain", %{conn: conn, site: site} do
+      another_site = insert(:site)
+
+      conn =
+        put(conn, Routes.site_path(conn, :change_domain_submit, site.domain), %{
+          "site" => %{"domain" => another_site.domain}
+        })
+
+      resp = html_response(conn, 200)
+      assert resp =~ "This domain cannot be registered"
+
+      site = Repo.reload!(site)
+      assert site.domain != another_site.domain
+      assert is_nil(site.domain_changed_from)
+    end
+
+    @tag :v2_only
+    test "domain change form submission to a domain in transition period", %{
+      conn: conn,
+      site: site
+    } do
+      another_site = insert(:site, domain_changed_from: "foo.example.com")
+
+      conn =
+        put(conn, Routes.site_path(conn, :change_domain_submit, site.domain), %{
+          "site" => %{"domain" => "foo.example.com"}
+        })
+
+      resp = html_response(conn, 200)
+      assert resp =~ "This domain cannot be registered"
+
+      site = Repo.reload!(site)
+      assert site.domain != another_site.domain
+      assert is_nil(site.domain_changed_from)
+    end
+
+    @tag :v2_only
+    test "domain change succcessful form submission redirects to snippet change info", %{
+      conn: conn,
+      site: site
+    } do
+      original_domain = site.domain
+
+      conn =
+        put(conn, Routes.site_path(conn, :change_domain_submit, site.domain), %{
+          "site" => %{"domain" => "foo.example.com"}
+        })
+
+      assert redirected_to(conn) ==
+               Routes.site_path(conn, :add_snippet_after_domain_change, "foo.example.com")
+
+      site = Repo.reload!(site)
+      assert site.domain == "foo.example.com"
+      assert site.domain_changed_from == original_domain
+    end
+
+    @tag :v2_only
+    test "snippet info after domain change", %{
+      conn: conn,
+      site: site
+    } do
+      put(conn, Routes.site_path(conn, :change_domain_submit, site.domain), %{
+        "site" => %{"domain" => "foo.example.com"}
+      })
+
+      resp =
+        conn
+        |> get(Routes.site_path(conn, :add_snippet_after_domain_change, "foo.example.com"))
+        |> html_response(200)
+        |> Floki.parse_document!()
+        |> Floki.text()
+
+      assert resp =~
+               "Your domain has been changed. You must update the JavaScript snippet on your site within 72 hours"
     end
   end
 end

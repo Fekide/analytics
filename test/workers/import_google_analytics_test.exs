@@ -2,8 +2,10 @@ defmodule Plausible.Workers.ImportGoogleAnalyticsTest do
   use Plausible.DataCase
   use Bamboo.Test
   import Double
-  import Plausible.TestUtils
+
   alias Plausible.Workers.ImportGoogleAnalytics
+
+  @moduletag capture_log: true
 
   @imported_data %Plausible.Site.ImportedData{
     start_date: Timex.today() |> Timex.shift(days: -7),

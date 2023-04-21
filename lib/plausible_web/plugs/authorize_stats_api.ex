@@ -14,6 +14,7 @@ defmodule PlausibleWeb.AuthorizeStatsApiPlug do
          {:ok, api_key} <- find_api_key(token),
          :ok <- check_api_key_rate_limit(api_key),
          {:ok, site} <- verify_access(api_key, conn.params["site_id"]) do
+      Plausible.OpenTelemetry.add_site_attributes(site)
       assign(conn, :site, site)
     else
       {:error, :missing_api_key} ->
@@ -51,7 +52,10 @@ defmodule PlausibleWeb.AuthorizeStatsApiPlug do
   defp verify_access(_api_key, nil), do: {:error, :missing_site_id}
 
   defp verify_access(api_key, site_id) do
-    case Repo.get_by(Plausible.Site, domain: site_id) do
+    domain_based_search =
+      from s in Plausible.Site, where: s.domain == ^site_id or s.domain_changed_from == ^site_id
+
+    case Repo.one(domain_based_search) do
       %Plausible.Site{} = site ->
         is_member? = Sites.is_member?(api_key.user_id, site)
         is_super_admin? = Plausible.Auth.is_super_admin?(api_key.user_id)

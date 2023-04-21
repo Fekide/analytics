@@ -1,6 +1,5 @@
 defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
   use PlausibleWeb.ConnCase
-  import Plausible.TestUtils
 
   setup [:create_user, :create_new_site, :create_api_key, :use_api_key]
   @user_id 123
@@ -74,7 +73,7 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
 
       assert json_response(conn, 400) == %{
                "error" =>
-                 "The metric `led_zeppelin` is not recognized. Find valid metrics from the documentation: https://plausible.io/docs/stats-api#get-apiv1statsbreakdown"
+                 "The metric `led_zeppelin` is not recognized. Find valid metrics from the documentation: https://plausible.io/docs/stats-api#metrics"
              }
     end
 
@@ -98,10 +97,10 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
   end
 
   test "aggregates a single metric", %{conn: conn, site: site} do
-    populate_stats([
-      build(:pageview, user_id: @user_id, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00]),
-      build(:pageview, user_id: @user_id, domain: site.domain, timestamp: ~N[2021-01-01 00:25:00]),
-      build(:pageview, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+    populate_stats(site, [
+      build(:pageview, user_id: @user_id, timestamp: ~N[2021-01-01 00:00:00]),
+      build(:pageview, user_id: @user_id, timestamp: ~N[2021-01-01 00:25:00]),
+      build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
     ])
 
     conn =
@@ -117,14 +116,16 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
            }
   end
 
-  test "aggregates visitors, pageviews, visits, bounce rate and visit duration", %{
+  test "rounds views_per_visit to two decimal places", %{
     conn: conn,
     site: site
   } do
-    populate_stats([
-      build(:pageview, user_id: @user_id, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00]),
-      build(:pageview, user_id: @user_id, domain: site.domain, timestamp: ~N[2021-01-01 00:25:00]),
-      build(:pageview, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+    populate_stats(site, [
+      build(:pageview, user_id: @user_id, timestamp: ~N[2021-01-01 00:00:00]),
+      build(:pageview, user_id: @user_id, timestamp: ~N[2021-01-01 00:25:00]),
+      build(:pageview, user_id: 456, timestamp: ~N[2021-01-01 00:00:00]),
+      build(:pageview, user_id: 456, timestamp: ~N[2021-01-01 00:25:00]),
+      build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
     ])
 
     conn =
@@ -132,13 +133,37 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
         "site_id" => site.domain,
         "period" => "day",
         "date" => "2021-01-01",
-        "metrics" => "pageviews,visits,visitors,bounce_rate,visit_duration"
+        "metrics" => "views_per_visit"
+      })
+
+    assert json_response(conn, 200)["results"] == %{
+             "views_per_visit" => %{"value" => 1.67}
+           }
+  end
+
+  test "aggregates all metrics in a single query", %{
+    conn: conn,
+    site: site
+  } do
+    populate_stats(site, [
+      build(:pageview, user_id: @user_id, timestamp: ~N[2021-01-01 00:00:00]),
+      build(:pageview, user_id: @user_id, timestamp: ~N[2021-01-01 00:25:00]),
+      build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
+    ])
+
+    conn =
+      get(conn, "/api/v1/stats/aggregate", %{
+        "site_id" => site.domain,
+        "period" => "day",
+        "date" => "2021-01-01",
+        "metrics" => "pageviews,visits,views_per_visit,visitors,bounce_rate,visit_duration"
       })
 
     assert json_response(conn, 200)["results"] == %{
              "pageviews" => %{"value" => 3},
              "visitors" => %{"value" => 2},
              "visits" => %{"value" => 2},
+             "views_per_visit" => %{"value" => 1.5},
              "bounce_rate" => %{"value" => 50},
              "visit_duration" => %{"value" => 750}
            }
@@ -146,19 +171,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
 
   describe "comparisons" do
     test "compare period=day with previous period", %{conn: conn, site: site} do
-      populate_stats([
-        build(:pageview, domain: site.domain, timestamp: ~N[2020-12-31 00:00:00]),
+      populate_stats(site, [
+        build(:pageview, timestamp: ~N[2020-12-31 00:00:00]),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
-        build(:pageview, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
       ])
 
       conn =
@@ -179,19 +202,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
     end
 
     test "compare period=6mo with previous period", %{conn: conn, site: site} do
-      populate_stats([
-        build(:pageview, domain: site.domain, timestamp: ~N[2020-12-31 00:00:00]),
+      populate_stats(site, [
+        build(:pageview, timestamp: ~N[2020-12-31 00:00:00]),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-02-01 00:25:00]
         ),
-        build(:pageview, domain: site.domain, timestamp: ~N[2021-03-01 00:00:00])
+        build(:pageview, timestamp: ~N[2021-03-01 00:00:00])
       ])
 
       conn =
@@ -214,19 +235,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
 
   describe "filters" do
     test "can filter by source", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           referrer_source: "Google",
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
-        build(:pageview, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
       ])
 
       conn =
@@ -247,20 +266,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
     end
 
     test "can filter by no source/referrer", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
         build(:pageview,
           referrer_source: "Google",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         )
       ])
@@ -283,19 +299,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
     end
 
     test "can filter by referrer", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           referrer: "https://facebook.com",
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
-        build(:pageview, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
       ])
 
       conn =
@@ -316,19 +330,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
     end
 
     test "can filter by utm_medium", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           utm_medium: "social",
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
-        build(:pageview, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
       ])
 
       conn =
@@ -349,19 +361,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
     end
 
     test "can filter by utm_source", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           utm_source: "Twitter",
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
-        build(:pageview, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
       ])
 
       conn =
@@ -382,19 +392,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
     end
 
     test "can filter by utm_campaign", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           utm_campaign: "profile",
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
-        build(:pageview, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
       ])
 
       conn =
@@ -415,19 +423,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
     end
 
     test "can filter by device type", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           screen_size: "Desktop",
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
-        build(:pageview, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
       ])
 
       conn =
@@ -448,19 +454,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
     end
 
     test "can filter by browser", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           browser: "Chrome",
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
-        build(:pageview, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
       ])
 
       conn =
@@ -481,20 +485,18 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
     end
 
     test "can filter by browser version", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           browser: "Chrome",
           browser_version: "56",
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
-        build(:pageview, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
       ])
 
       conn =
@@ -515,19 +517,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
     end
 
     test "can filter by operating system", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           operating_system: "Mac",
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
-        build(:pageview, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
       ])
 
       conn =
@@ -548,19 +548,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
     end
 
     test "can filter by operating system version", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           operating_system_version: "10.5",
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
-        build(:pageview, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
       ])
 
       conn =
@@ -581,19 +579,17 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
     end
 
     test "can filter by country", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           country_code: "EE",
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
-        build(:pageview, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
       ])
 
       conn =
@@ -613,26 +609,23 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
              }
     end
 
-    test "when filtering by page, session metrics treat is like entry_page", %{
+    test "can filter by page", %{
       conn: conn,
       site: site
     } do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
-          pathname: "/blogpost",
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
+          pathname: "/blogpost",
           timestamp: ~N[2021-01-01 00:25:00]
         ),
-        build(:pageview, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00]),
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00]),
         build(:pageview,
           pathname: "/blogpost",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         )
       ])
@@ -655,25 +648,22 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
     end
 
     test "filtering by event:name", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:event,
           name: "Signup",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:event,
           name: "Signup",
-          domain: site.domain,
           user_id: @user_id,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
         build(:event,
           name: "Signup",
-          domain: site.domain,
           user_id: @user_id,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
-        build(:pageview, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00])
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
       ])
 
       conn =
@@ -692,23 +682,20 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
     end
 
     test "combining filters", %{conn: conn, site: site} do
-      populate_stats([
+      populate_stats(site, [
         build(:pageview,
           pathname: "/blogpost",
           country_code: "EE",
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         ),
         build(:pageview,
           user_id: @user_id,
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:25:00]
         ),
-        build(:pageview, domain: site.domain, timestamp: ~N[2021-01-01 00:00:00]),
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00]),
         build(:pageview,
           pathname: "/blogpost",
-          domain: site.domain,
           timestamp: ~N[2021-01-01 00:00:00]
         )
       ])
@@ -798,6 +785,71 @@ defmodule PlausibleWeb.Api.ExternalStatsController.AggregateTest do
         })
 
       assert json_response(conn, 200)["results"] == %{"visitors" => %{"value" => 3}}
+    end
+
+    test "joins correctly with the sessions (CollapsingMergeTree) table", %{
+      conn: conn,
+      site: site
+    } do
+      create_sessions([
+        %{
+          domain: site.domain,
+          site_id: site.id,
+          session_id: 1000,
+          country_code: "EE",
+          sign: 1,
+          events: 1
+        },
+        %{
+          domain: site.domain,
+          site_id: site.id,
+          session_id: 1000,
+          country_code: "EE",
+          sign: -1,
+          events: 1
+        },
+        %{
+          domain: site.domain,
+          site_id: site.id,
+          session_id: 1000,
+          country_code: "EE",
+          sign: 1,
+          events: 2
+        }
+      ])
+
+      create_events([
+        %{
+          domain: site.domain,
+          site_id: site.id,
+          session_id: 1000,
+          country_code: "EE",
+          name: "pageview"
+        },
+        %{
+          domain: site.domain,
+          site_id: site.id,
+          session_id: 1000,
+          country_code: "EE",
+          name: "pageview"
+        },
+        %{
+          domain: site.domain,
+          site_id: site.id,
+          session_id: 1000,
+          country_code: "EE",
+          name: "pageview"
+        }
+      ])
+
+      conn =
+        get(conn, "/api/v1/stats/aggregate", %{
+          "site_id" => site.domain,
+          "metrics" => "pageviews",
+          "filters" => "visit:country==EE"
+        })
+
+      assert json_response(conn, 200)["results"] == %{"pageviews" => %{"value" => 3}}
     end
   end
 end

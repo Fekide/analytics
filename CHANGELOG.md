@@ -1,10 +1,51 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
-
 ## Unreleased
 
 ### Added
+- 'Last updated X seconds ago' info to 'current visitors' tooltips
+- Add support for more Bamboo adapters, i.e. `Bamboo.MailgunAdapter`, `Bamboo.MandrillAdapter`, `Bamboo.SendGridAdapter` plausible/analytics#2649
+- Ability to change domain for existing site (requires numeric IDs data migration, instructions will be provided separately) UI + API (`PUT /api/v1/sites`)
+
+### Fixed
+- Make goal-filtered CSV export return only unique_conversions timeseries in the 'visitors.csv' file
+- Stop treating page filter as an entry page filter
+- City report showing N/A instead of city names with imported data plausible/analytics#2675
+- Empty values for Screen Size, OS and Browser are uniformly replaced with "(not set)"
+- Fix [more pageviews with session prop filter than with no filters](https://github.com/plausible/analytics/issues/1666)
+- Cascade delete sent_renewal_notifications table when user is deleted plausible/analytics#2549
+- Show appropriate top-stat metric labels on the realtime dashboard when filtering by a goal
+- Fix breakdown API pagination when using event metrics plausible/analytics#2562
+- Automatically update all visible dashboard reports in the realtime view
+- Connect via TLS when using HTTPS scheme in ClickHouse URL plausible/analytics#2570
+- Add error message in case a transfer to an invited (but not joined) user is requested plausible/analytics#2651
+- Fix bug with [showing property breakdown with a prop filter](https://github.com/plausible/analytics/issues/1789)
+- Fix bug when combining goal and prop filters plausible/analytics#2654
+
+### Changed
+- Reject events with long URIs and data URIs plausible/analytics#2536
+- Always show direct traffic in sources reports plausible/analytics#2531
+- Stop recording XX and T1 country codes plausible/analytics#2556
+- Device type is now determined from the User-Agent instead of window.innerWidth plausible/analytics#2711
+- Add padding by default to embedded dashboards so that shadows are not cut off plausible/analytics#2744
+- Update the User Agents database (https://github.com/matomo-org/device-detector/releases/tag/6.1.1)
+
+### Removed
+- Remove Firewall plug and `IP_BLOCKLIST` environment variable
+- Remove the ability to collapse the main graph plausible/analytics#2627
+
+## v1.5.1 - 2022-12-06
+
+### Fixed
+- Return empty list when breaking down by event:page without events plausible/analytics#2530
+- Fallback to empty build metadata when failing to parse $BUILD_METADATA plausible/analytics#2503
+
+## v1.5.0 - 2022-12-02
+
+### Added
+- Set a different interval on the top graph plausible/analytics#1574 (thanks to @Vigasaurus for this feature)
+- A `tagged-events` script extension for out-of-the-box custom event tracking
 - The ability to escape `|` characters with `\` in Stats API filter values
 - An upper bound of 1000 to the `limit` parameter in Stats API
 - The `exclusions` script extension now also takes a `data-include` attribute tag
@@ -39,6 +80,8 @@ All notable changes to this project will be documented in this file.
 - Manually lock and unlock enterprise users plausible/analytics#2197
 - ARM64 support for docker images plausible/analytics#2103
 - Add support for international domain names (IDNs) plausible/analytics#2034
+- Allow self-hosters to register an account on first launch
+- Fix ownership transfer invitation link in self-hosted deployments
 
 ### Fixed
 - Plausible script does not prevent default if it's been prevented by an external script [plausible/analytics#1941](https://github.com/plausible/analytics/issues/1941)
@@ -56,8 +99,7 @@ All notable changes to this project will be documented in this file.
 - Restore compatibility with older format of shared links [plausible/analytics#2225](https://github.com/plausible/analytics/pull/2225)
 - Fix 'All time' period for sites with no recorded stats [plausible/analytics#2277](https://github.com/plausible/analytics/pull/2277)
 - Ensure settings page can be rendered after a form error [plausible/analytics#2278](https://github.com/plausible/analytics/pull/2278)
-
->>>>>>> 09af319b (Add changelog)
+- Ensure newlines from settings files are trimmed [plausible/analytics#2480](https://github.com/plausible/analytics/pull/2480)
 
 ### Changed
 - `script.file-downloads.outbound-links.js` only sends an outbound link event when an outbound download link is clicked
@@ -71,12 +113,15 @@ All notable changes to this project will be documented in this file.
 - Do not display ZZ country code in countries report [PR#1934](https://github.com/plausible/analytics#2223)
 - Add fallback icon for when DDG favicon cannot be fetched [PR#2279](https://github.com/plausible/analytics#2279)
 
-## v1.4.1
+### Security
+- Add Content-Security-Policy header to favicon path
+
+## v1.4.1 - 2021-11-29
 
 ### Fixed
 - Fixes database error when pathname contains a question mark
 
-## v1.4.0
+## v1.4.0 - 2021-10-27
 
 ### Added
 - New parameter `metrics` for the `/api/v1/stats/timeseries` endpoint plausible/analytics#952
