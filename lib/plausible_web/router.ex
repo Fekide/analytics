@@ -163,7 +163,6 @@ defmodule PlausibleWeb.Router do
 
     get "/", PageController, :index
 
-
     get "/billing/change-plan", BillingController, :change_plan_form
     get "/billing/change-plan/preview/:plan_id", BillingController, :change_plan_preview
     post "/billing/change-plan/:new_plan_id", BillingController, :change_plan
@@ -173,7 +172,6 @@ defmodule PlausibleWeb.Router do
     get "/billing/change-plan/enterprise/:plan_id", BillingController, :change_enterprise_plan
     get "/billing/upgrade-success", BillingController, :upgrade_success
     get "/billing/subscription/ping", BillingController, :ping_subscription
-
 
     get "/sites", SiteController, :index
     get "/sites/new", SiteController, :new
