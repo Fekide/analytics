@@ -15,3 +15,5 @@ else
     "Running tests against v1 schema. Use: `V2_MIGRATION_DONE=1 mix test` for secondary run."
   )
 end
+
+ExUnit.start()
