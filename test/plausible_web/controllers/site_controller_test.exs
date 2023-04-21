@@ -107,7 +107,11 @@ defmodule PlausibleWeb.SiteControllerTest do
         })
 
       assert redirected_to(conn) == "/example.com/snippet"
-      assert Repo.get_by(Plausible.Site, domain: "example.com")
+      assert site = Repo.get_by(Plausible.Site, domain: "example.com")
+      assert site.domain == "example.com"
+      assert site.timezone == "Europe/London"
+      assert site.ingest_rate_limit_scale_seconds == 60
+      assert site.ingest_rate_limit_threshold == 1_000_000
     end
 
     test "fails to create the site if only http:// provided", %{conn: conn} do
@@ -334,8 +338,8 @@ defmodule PlausibleWeb.SiteControllerTest do
     setup [:create_user, :log_in, :create_site]
 
     test "lists goals for the site", %{conn: conn, site: site} do
-      insert(:goal, domain: site.domain, event_name: "Custom event")
-      insert(:goal, domain: site.domain, page_path: "/register")
+      insert(:goal, site: site, event_name: "Custom event")
+      insert(:goal, site: site, page_path: "/register")
 
       conn = get(conn, "/#{site.domain}/settings/goals")
 
@@ -660,7 +664,7 @@ defmodule PlausibleWeb.SiteControllerTest do
     setup [:create_user, :log_in, :create_site]
 
     test "deletes goal", %{conn: conn, site: site} do
-      goal = insert(:goal, domain: site.domain, event_name: "Custom event")
+      goal = insert(:goal, site: site, event_name: "Custom event")
 
       conn = delete(conn, "/#{site.domain}/goals/#{goal.id}")
 
@@ -670,7 +674,7 @@ defmodule PlausibleWeb.SiteControllerTest do
 
     test "fails to delete goal for a foreign site", %{conn: conn, site: site} do
       another_site = insert(:site)
-      goal = insert(:goal, domain: another_site.domain, event_name: "Custom event")
+      goal = insert(:goal, site: another_site, event_name: "Custom event")
 
       conn = delete(conn, "/#{site.domain}/goals/#{goal.id}")
 
